@@ -1,0 +1,33 @@
+{
+  // Dedicated Chipyard devcontainer. Select via:
+  //   "Dev Containers: Reopen in Container" -> "Chipyard"
+  // The Chipyard repo is cloned into the image at /home/vscode/chipyard and the
+  // workspace is a named volume seeded from it (so the build, which writes a
+  // ~7GB .conda-env into the repo, persists across container rebuilds and isn't
+  // shadowed by a host bind-mount).
+  "name": "Chipyard",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".",
+    "args": {
+      "CHIPYARD_HASH": "48f904ae"
+    }
+  },
+  "remoteUser": "vscode",
+  "workspaceFolder": "/home/vscode/chipyard",
+  "workspaceMount": "source=chipyard-src,target=/home/vscode/chipyard,type=volume",
+  // `--init` reaps zombie processes from the long toolchain/sbt builds.
+  "runArgs": ["--init"],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "scalameta.metals",
+        "scala-lang.scala",
+        "ms-python.python"
+      ]
+    }
+  }
+  // To actually build Chipyard, open a terminal in the container and run:
+  //   conda activate base && ./build-setup.sh riscv-tools
+  // (left manual so image builds stay fast; the build takes 30-60+ min.)
+}
