@@ -1,21 +1,21 @@
 {
   // Chipyard devcontainer. Auto-discovered by VS Code here under .devcontainer/.
-  // The Dockerfile lives in ../dockerfiles/ (mirrors upstream chipyard layout).
-  // It clones Chipyard into the image at /home/vscode/chipyard; the workspace is
-  // a named volume seeded from that clone, so the build (which writes a ~7GB
-  // .conda-env into the repo) persists across container rebuilds and isn't
-  // shadowed by a host bind-mount.
+  // Builds from the Dockerfile alongside this file (.devcontainer/Dockerfile),
+  // which installs prerequisites (apt + conda) but does NOT clone Chipyard. The
+  // host repo is bind-mounted in at /home/vscode/chipyard, so the build (which
+  // writes a ~7GB .conda-env into the repo) lands in your local checkout and
+  // persists on the host across container rebuilds.
   "name": "Chipyard",
   "build": {
-    "dockerfile": "../dockerfiles/Dockerfile",
-    "context": "../dockerfiles",
+    "dockerfile": "Dockerfile",
+    "context": ".",
     "args": {
       "CHIPYARD_HASH": "48f904ae"
     }
   },
   "remoteUser": "vscode",
   "workspaceFolder": "/home/vscode/chipyard",
-  "workspaceMount": "source=chipyard-src,target=/home/vscode/chipyard,type=volume",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/vscode/chipyard,type=bind,consistency=cached",
   // `--init` reaps zombie processes from the long toolchain/sbt builds.
   "runArgs": ["--init"],
   "customizations": {

@@ -1,8 +1,7 @@
 # Chipyard devcontainer image: installs all prerequisites (apt deps + conda) as a
 # non-root `vscode` user, but does NOT clone or build Chipyard. The Chipyard
-# source is bind-mounted from the host at /home/vscode/chipyard (e.g.
-# `docker run -v "$PWD":/home/vscode/chipyard ...`), and you run the build inside
-# the container:
+# source is bind-mounted from the host at /home/vscode/chipyard (see
+# devcontainer.json), and you run the build inside the container:
 #
 #   cd ~/chipyard
 #   conda activate base
@@ -67,7 +66,7 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 # Patch: `conda update conda` pulls 23.9.0, which renamed `experimental_solver`
 # to `solver` (conda 23.7+). The pinned script still uses the old key and fails
 # with `CondaValueError: Key 'experimental_solver' is not a known primitive parameter.`
-RUN curl -fsSL "https://raw.githubusercontent.com/ucb-bar/chipyard/${CHIPYARD_HASH}/.github/scripts/install-conda.sh" -o /tmp/install-conda.sh \
+RUN curl -fsSL "https://raw.githubusercontent.com/roykim0823/chipyard/${CHIPYARD_HASH}/.github/scripts/install-conda.sh" -o /tmp/install-conda.sh \
     && sed -i 's/--set experimental_solver libmamba/--set solver libmamba/' /tmp/install-conda.sh \
     && bash /tmp/install-conda.sh \
     && rm /tmp/install-conda.sh
