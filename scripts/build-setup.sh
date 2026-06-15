@@ -340,7 +340,7 @@ if run_step "10"; then
     else
 	echo "Downloading CIRCT from nightly build"
 
-	git submodule update --init $CYDIR/tools/install-circt &&
+	git submodule update --init --force $CYDIR/tools/install-circt &&
 	    $CYDIR/tools/install-circt/bin/download-release-or-nightly-circt.sh \
 		-f circt-full-static-linux-x64.tar.gz \
 		-i $PREFIX \
