@@ -17,7 +17,12 @@
   "workspaceFolder": "/home/vscode/chipyard",
   "workspaceMount": "source=${localWorkspaceFolder},target=/home/vscode/chipyard,type=bind,consistency=cached",
   // `--init` reaps zombie processes from the long toolchain/sbt builds.
-  "runArgs": ["--init"],
+  // `--privileged` grants the loop-device access FireMarshal needs to
+  // loop-mount and apply overlays to the buildroot Linux disk images
+  // (build-setup.sh step 9). Without it, `mount -o loop` fails with
+  // "Operation not permitted" / exit 32 (no /dev/loop*, no CAP_SYS_ADMIN).
+  // Requires the host kernel to provide loop support (standard on Linux).
+  "runArgs": ["--init", "--privileged"],
   "customizations": {
     "vscode": {
       "extensions": [
