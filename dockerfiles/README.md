@@ -15,12 +15,34 @@ Chipyard repo itself is **bind-mounted from the host**, not cloned into the imag
 ## 1. Quick Start
 
 The prerequisites (§3) are already in the image and the glibc 2.39 lockfile is
-already pinned in this checkout, so a fresh build is just:
+already pinned in this checkout, so the build itself is just `./build-setup.sh
+riscv-tools`. Pick the path that matches your situation.
+
+### First run (fresh image)
+
+On a freshly built image the `conda activate base` line commonly hits two issues
+(the conda shell hook isn't loaded, and a zstd/zstandard version mismatch breaks
+the solver) — fix both up front, then build:
 
 ```bash
-cd ~/chipyard                            # bind-mounted host repo (/home/vscode/chipyard)
-conda activate base                      # conda is on PATH (system /opt/conda) in the devcontainer
-rm -rf .conda-lock-env .conda-env        # only if re-running; step 1 aborts if these exist
+cd ~/chipyard                                                             # bind-mounted host repo (/home/vscode/chipyard)
+source /opt/conda/etc/profile.d/conda.sh                                  # CondaError: Run 'conda init' before 'conda activate'
+python -m pip install --user --force-reinstall --no-cache-dir zstandard   # zstd C API versions mismatch (§4.1)
+conda activate base
+./build-setup.sh riscv-tools
+```
+
+### Re-run (rebuild over an existing checkout)
+
+conda is already healthy from the first run (the `--user` zstandard fix lives in
+`~/.local`), so the only extra step is clearing the env dirs — step 1 aborts if
+they already exist:
+
+```bash
+cd ~/chipyard
+source /opt/conda/etc/profile.d/conda.sh   # new shell: CondaError: Run 'conda init' before 'conda activate'
+conda activate base
+rm -rf .conda-lock-env .conda-env          # step 1 aborts if these exist
 ./build-setup.sh riscv-tools
 ```
 
@@ -113,9 +135,58 @@ This pins `sysroot_linux-64=2.39` (available on conda-forge) in:
 | Step | Symptom | Cause | Fix |
 |------|---------|-------|-----|
 | 1 | `conda: command not found` | conda not on `PATH` (only when building outside the image) | conda is baked into the image; otherwise install Miniforge (§3a) |
+| 1 | `CondaError: Run 'conda init' before 'conda activate'` | conda shell hook not loaded in this terminal (image inits root's profile, not the `vscode` user's) | `source /opt/conda/etc/profile.d/conda.sh` (works immediately); to persist, `conda init bash` then reopen the terminal |
+| 1 | `zstd C API versions mismatch (10507 ... 10502)`; `conda-libmamba-solver` / `conda-pypi` entry points fail to load | the `zstandard` C-extension was built against zstd 1.5.2 (10502) but `conda update conda` pulled libzstd 1.5.7 (10507); breaks the default libmamba solver | `pip install --user` the PyPI `zstandard` (bundles its own libzstd, no sudo) — see §4.1 below |
 | 1 | `conda-lock install` prints help, exit 1 | lockfile path missing (deleted by glibc regen) | `git checkout -- conda-reqs/conda-lock-reqs/<file>`; see §3b |
 | 3 | `undefined reference to __isoc23_strtol` | conda glibc 2.34 < host 2.39 | regenerate lockfile for sysroot 2.39 (§3b) |
 | 3 | `.conda-env/bin/install: not found` (Error 127) | two builds running, one `rm -rf`'d the env | run a single build only |
 | 5 | `not found: object gemmini` / `type Gemmini` | `generators/gemmini` working tree source deleted | `cd generators/gemmini && git checkout -- .` |
 | 8 | seems frozen, no output | cloning `firesim/linux.git` kernel (`--filter=tree:0`); GitHub enumerates ~10 min at 0 bytes | wait; `du -sh .git/modules/software/firemarshal/modules/riscv-linux` should grow |
 | 9 | `FileNotFoundError: 'depmod'` | no `kmod` package | kmod is baked into the image; otherwise `sudo apt-get install -y kmod` (§3a) |
+
+### 4.1 conda solver / zstd mismatch repair
+
+`conda update conda` (run by `install-conda.sh`) can leave the base env with a
+newer `libzstd` (1.5.7 → version number `10507`) than the conda-shipped
+`zstandard 0.19.0` binding was compiled against (zstd 1.5.2 → `10502`). The symptom
+is harmless-looking warnings plus two failed entry points — but one of them is
+`conda-libmamba-solver`, the default solver, so `build-setup.sh` step 1 can fail
+to create the env.
+
+**The conda-side reinstall does not work in this devcontainer.** The matched-pair
+classic-solver approach (`conda install -n base --solver=classic --force-reinstall
+-y zstandard zstd`) fails here because:
+- `/opt/conda` is owned by uid 1000, so as the `vscode` user the command dies with
+  `EnvironmentNotWritableError` unless run via `sudo`; and
+- even with `sudo`, `--force-reinstall` just puts the *same* incompatible pair back;
+  downgrading `zstd=1.5.2` to match fails to solve (dependency conflicts); and conda
+  can't pull a newer matched `zstandard` because reading `.conda`/`.zst` packages
+  itself needs a working `zstandard` (chicken-and-egg).
+
+**Fix it with a `--user` pip install (no sudo).** The PyPI `zstandard` wheel
+statically bundles its own libzstd, sidestepping conda's mismatched lib entirely.
+Installing it into your user site (`~/.local`, owned by `vscode`) shadows the broken
+conda copy on `sys.path` — and because `/opt/conda/bin/conda`'s python runs as the
+same uid with `ENABLE_USER_SITE=True`, it fixes the libmamba solver too:
+
+```bash
+python -m pip install --user --force-reinstall --no-cache-dir zstandard
+```
+
+Verify the warnings are gone and conda is healthy:
+
+```bash
+source /opt/conda/etc/profile.d/conda.sh && conda activate base       # should activate with no warnings
+python -c "import zstandard; print(zstandard.__file__, zstandard.__version__)"  # path under ~/.local, e.g. 0.25.0
+conda info        # should print with no 'Error while loading conda entry point' lines
+```
+
+> The `--user` fix is tied to the `vscode` user's home and to this Python minor
+> (`python3.10` user-site). To fix it image-wide for *any* user instead, install
+> into the system env with sudo: `sudo /opt/conda/bin/python -m pip install
+> --force-reinstall --no-cache-dir zstandard`.
+>
+> Neither variant survives a devcontainer rebuild (both live outside the
+> bind-mounted repo). To make it permanent, add a
+> `/opt/conda/bin/python -m pip install --force-reinstall --no-cache-dir zstandard`
+> step after `install-conda.sh` in the Dockerfile.

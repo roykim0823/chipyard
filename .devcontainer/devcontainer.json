@@ -24,7 +24,15 @@
         "scalameta.metals",
         "scala-lang.scala",
         "ms-python.python"
-      ]
+      ],
+      // Chipyard has dozens of (nested) submodules; building the toolchain writes
+      // 10k+ files into source trees like riscv-gnu-toolchain/gdb. Stop VS Code's
+      // Git extension from opening each submodule as its own repo (the source of
+      // the "too many active changes, only a subset of Git features" warning).
+      "settings": {
+        "git.detectSubmodules": false,
+        "git.ignoreLimitWarning": true
+      }
     }
   }
   // To build Chipyard, open a terminal in the container and run:

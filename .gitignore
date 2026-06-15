@@ -30,3 +30,8 @@ project/project/
 .classpath_cache/
 .vscode/
 tests/build/
+
+# Chisel/FIRRTL build artifacts
+*.fir
+*.anno.json
+generated-src/
