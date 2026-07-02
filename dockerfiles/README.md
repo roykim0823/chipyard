@@ -6,7 +6,7 @@ Ubuntu 24.04 host (glibc 2.39). The fixes in §3 are now baked into the
 devcontainer image (`.devcontainer/Dockerfile` / `dockerfiles/Dockerfile`); the
 Chipyard repo itself is **bind-mounted from the host**, not cloned into the image.
 
-- Chipyard: `github.com/ucb-bar/chipyard` @ `48f904ae` (bind-mounted from host)
+- Chipyard: `github.com/ucb-bar/chipyard` — `dev` merged with upstream `main` (June 2026 release, `0acc1e1d`); bind-mounted from host
 - Host: Ubuntu 24.04, **glibc 2.39**, x86_64
 - Built env lives in `/home/vscode/chipyard/.conda-env` (~7.4 GB, on the host)
 
@@ -14,9 +14,15 @@ Chipyard repo itself is **bind-mounted from the host**, not cloned into the imag
 
 ## 1. Quick Start
 
-The prerequisites (§3) are already in the image and the glibc 2.39 lockfile is
-already pinned in this checkout, so the build itself is just `./build-setup.sh
-riscv-tools`. Pick the path that matches your situation.
+The prerequisites (§3) are already in the image, so the build itself is just
+`./build-setup.sh riscv-tools`. Pick the path that matches your situation.
+
+> ⚠️ **After the merge with upstream `main`, the conda lockfiles were reset to
+> upstream's — they pin `sysroot_linux-64=2.34` again**, not the glibc-2.39 build
+> this checkout previously carried. `chipyard-base.yaml` still requests
+> `sysroot_linux-64=2.39`, and `build-setup.sh` step 1 regenerates the lockfiles
+> to match; if you skip step 1 and hit the `__isoc23_strtol` link error in step 3,
+> regenerate them manually per §3b.
 
 ### First run (fresh image)
 
@@ -113,7 +119,7 @@ sudo apt-get update && sudo apt-get install -y kmod
 > `dockerfiles/Dockerfile`), so they survive a devcontainer rebuild. Only the
 > `.conda-env` build output lives in the bind-mounted repo on the host.
 
-### b) glibc 2.39 lockfile (one-time, already done in this checkout)
+### b) glibc 2.39 lockfile (regenerate after the upstream-`main` merge)
 
 The repo ships conda lockfiles pinned to `sysroot_linux-64=2.34`. On this glibc
 **2.39** host that mismatch causes:
@@ -123,8 +129,11 @@ The repo ships conda lockfiles pinned to `sysroot_linux-64=2.34`. On this glibc
   (a glibc ≥ 2.38 symbol) because the conda toolchain's glibc (2.34) is older than
   the host headers (2.39).
 
-**Resolution (kept in this checkout):** the lockfiles were regenerated for glibc
-2.39. If starting from a *fresh* clone on a 2.39 host, reproduce with:
+**Status after the `main` merge:** the merge reset these lockfiles to upstream's,
+which pin `sysroot_linux-64=2.34` again — so the earlier 2.39 regeneration was
+overwritten and they must be regenerated on this glibc 2.39 host.
+`chipyard-base.yaml` already requests `sysroot_linux-64=2.39`, so `build-setup.sh`
+step 1 does the regen for you; to reproduce it manually on a 2.39 host:
 ```bash
 # chipyard-base.yaml: set  sysroot_linux-64=2.39  (build-setup does this sed automatically)
 conda activate base    # conda is on PATH (system /opt/conda) in the devcontainer
