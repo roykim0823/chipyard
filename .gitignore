@@ -30,6 +30,7 @@ project/project/
 .classpath_cache/
 .vscode/
 tests/build/
+conda-reqs/chipyard-base.yaml.bak
 
 # Chisel/FIRRTL build artifacts
 *.fir
