@@ -54,11 +54,17 @@ rm -rf .conda-lock-env .conda-env          # step 1 aborts if these exist
   precompile · 10 CIRCT · 11 cleanup.
 
 ### Resuming after a fix
-Skip completed steps with repeated `-s N`, and re-source the env first:
+Skip completed steps with repeated `-s N`, and re-source the env first. Prefer
+`source env.sh` — it activates `.conda-env`, so `$CONDA_PREFIX` points at the
+built env and you can derive everything else from it. Because `-s 1` skips conda
+init, steps 3 and 10 fall back to `$RISCV` for the install prefix, so export it:
 ```bash
-source env.sh                                        # conda is already on PATH
+source env.sh                                        # activates .conda-env (conda already on PATH)
+export RISCV=$CONDA_PREFIX/riscv-tools               # steps 3 & 10 need $RISCV when step 1 is skipped
 ./build-setup.sh -s 1 -s 2 -s 3 -s 4 riscv-tools     # e.g. resume at step 5
 ```
+Without the `RISCV` export, step 10 aborts with `ERROR: If conda initialization
+skipped, $RISCV variable must be defined` (see §4.2).
 
 ---
 
@@ -128,6 +134,19 @@ This pins `sysroot_linux-64=2.39` (available on conda-forge) in:
 - `conda-reqs/conda-lock-reqs/conda-requirements-riscv-tools-linux-64.conda-lock.yml`
 - `conda-reqs/conda-lock-reqs/conda-requirements-riscv-tools-linux-64-lean.conda-lock.yml`
 
+### c) Step 10 force-checks-out the install-circt submodule (committed to this checkout)
+
+Stock step 10 runs `git submodule update --init tools/install-circt`, which is a
+no-op when the submodule is already initialized at the recorded commit. If that
+submodule's working-tree files get wiped on the host (see §4.2), the plain update
+can't restore them, so the CIRCT download script is missing and the build dead-ends
+with `download-release-or-nightly-circt.sh: No such file or directory` (exit 127).
+This checkout adds `--force` to that line in `scripts/build-setup.sh` so step 10
+re-checks-out and self-heals:
+```bash
+git submodule update --init --force $CYDIR/tools/install-circt
+```
+
 ---
 
 ## 4. Troubleshooting (issues actually hit, in order)
@@ -140,9 +159,11 @@ This pins `sysroot_linux-64=2.39` (available on conda-forge) in:
 | 1 | `conda-lock install` prints help, exit 1 | lockfile path missing (deleted by glibc regen) | `git checkout -- conda-reqs/conda-lock-reqs/<file>`; see §3b |
 | 3 | `undefined reference to __isoc23_strtol` | conda glibc 2.34 < host 2.39 | regenerate lockfile for sysroot 2.39 (§3b) |
 | 3 | `.conda-env/bin/install: not found` (Error 127) | two builds running, one `rm -rf`'d the env | run a single build only |
-| 5 | `not found: object gemmini` / `type Gemmini` | `generators/gemmini` working tree source deleted | `cd generators/gemmini && git checkout -- .` |
+| 5 | `not found: object gemmini` / `type Gemmini` | `generators/gemmini` working tree source deleted (wiped submodule, §4.2) | `git submodule update --init --force generators/gemmini` |
 | 8 | seems frozen, no output | cloning `firesim/linux.git` kernel (`--filter=tree:0`); GitHub enumerates ~10 min at 0 bytes | wait; `du -sh .git/modules/software/firemarshal/modules/riscv-linux` should grow |
 | 9 | `FileNotFoundError: 'depmod'` | no `kmod` package | kmod is baked into the image; otherwise `sudo apt-get install -y kmod` (§3a) |
+| 10 | `download-release-or-nightly-circt.sh: No such file or directory` (exit 127) | `tools/install-circt` working tree wiped on host (§4.2) | `git submodule update --init --force tools/install-circt` (now baked into step 10, §3c) |
+| 10 | `ERROR: If conda initialization skipped, $RISCV variable must be defined` | `-s 1` skips conda init; PREFIX falls back to an unset `$RISCV` | `export RISCV=$CONDA_PREFIX/riscv-tools` after `source env.sh` |
 
 ### 4.1 conda solver / zstd mismatch repair
 
@@ -190,3 +211,29 @@ conda info        # should print with no 'Error while loading conda entry point'
 > bind-mounted repo). To make it permanent, add a
 > `/opt/conda/bin/python -m pip install --force-reinstall --no-cache-dir zstandard`
 > step after `install-conda.sh` in the Dockerfile.
+
+### 4.2 Wiped submodule working trees
+
+Several failures above (step 5 gemmini, step 10 install-circt) share one root
+cause: a submodule's tracked files get deleted from the working tree on the host
+— symptom: `git status` inside the submodule shows the files staged as deleted, or
+the submodule directory is empty apart from `.git`. This is **not** caused by the
+devcontainer (the source is bind-mounted; a rebuild re-attaches to the same host
+checkout and runs no git/clean steps) — it's a host-side deletion (a stray `rm`,
+a `git add -A` after a delete, an interrupted op).
+
+A plain `git submodule update --init <path>` will **not** restore the files: the
+recorded commit already matches, so the checkout is a no-op. Force a re-checkout:
+```bash
+git submodule update --init --force <path>      # e.g. tools/install-circt, tools/axe, generators/gemmini
+# or, from inside the submodule:
+git -C <path> restore --source=HEAD --staged --worktree .
+```
+
+Only use `--force` when files are **missing**. If a submodule instead shows
+*added/changed* content from a build (e.g. `toolchains/riscv-tools/riscv-tools-feedstock`
+→ `riscv-gnu-toolchain` → `qemu`), that's build output, not corruption — leave it,
+or silence it without touching anything:
+```bash
+git config submodule.<path>.ignore dirty        # local to your checkout, not committed
+```
