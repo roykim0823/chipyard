@@ -4,7 +4,7 @@
 > This document defines the **common pipeline foundation** of the Rocket scalar core and serves as the reference base for the series.
 > The follow-up document, "Per-Instruction-Type Execution Trace (Doc B)" — ALU / Load·Store / Mul·Div / Branch / FP — assumes the
 > **shared vocabulary and skeleton** defined here, and describes only the **differences (diffs)** of each type.
-> Reference source: [`RocketCore.scala`](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala)
+> Reference source: [`RocketCore.scala`](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala)
 > (under `generators/rocket-chip/src/main/scala/rocket/` in Chipyard)
 
 ---
@@ -14,7 +14,7 @@
 - Signal names are the identifiers used in the source, verbatim. For example: `ex_reg_valid`, `id_ctrl.mem_cmd`.
 - Stage prefix convention: `id_*` (Decode) → `ex_*` (Execute) → `mem_*` (Memory) → `wb_*` (Writeback).
 - **Only names containing `*_reg_*` are actual pipeline registers** (see §6). Most `id_*` names are combinational wires.
-- Code locations are given as `file:line` links. Links are relative paths from the workspace root (`chipyard/`).
+- Code locations are given as `file:line` links. Links are relative to this document's own directory (`notes/`), so they begin with `../`.
 - **Scope:** the scalar **integer pipeline (ID~WB)**. The vector unit, RoCC, and trace/debug are covered only as boundaries and overviews (§3~§4).
 - **Reference configuration:** RV64GC with virtual memory (`useVM`), `pipelinedMul`, and other defaults are assumed (§5).
 - **Reference source revision:** rocket-chip `55bcad0f5` (`v1.6-819-g55bcad0f5`), the revision pinned by the Chipyard superproject at `db852f0a`. Line numbers are valid for that snapshot and may shift in other versions.
@@ -58,13 +58,13 @@ Of the familiar `IF → ID → EX → MEM → WB` sequence, **IF (Instruction Fe
 
 | Stage | Character | Evidence |
 |---|---|---|
-| ID | **A combinational stage.** The instruction coming out of the IBuf is decoded, its registers read, and its hazards resolved within the same cycle. Most `id_*` names are wires. | `id_ctrl` = `Wire(...)` [RocketCore.scala:327](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L327) |
-| EX | **The first pipeline latch.** Values are captured in registers for the first time at the `ID→EX` boundary (`ex_reg_*`, `ex_ctrl`). | [RocketCore.scala:248-267](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L248-L267) |
-| MEM | Pipeline latch (`mem_reg_*`). Branch and exception resolution is finalized here. | [RocketCore.scala:269-291](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L269-L291) |
-| WB | Pipeline latch (`wb_reg_*`). RegFile write and exception commit. | [RocketCore.scala:293-311](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L293-L311) |
+| ID | **A combinational stage.** The instruction coming out of the IBuf is decoded, its registers read, and its hazards resolved within the same cycle. Most `id_*` names are wires. | `id_ctrl` = `Wire(...)` [RocketCore.scala:327](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L327) |
+| EX | **The first pipeline latch.** Values are captured in registers for the first time at the `ID→EX` boundary (`ex_reg_*`, `ex_ctrl`). | [RocketCore.scala:248-267](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L248-L267) |
+| MEM | Pipeline latch (`mem_reg_*`). Branch and exception resolution is finalized here. | [RocketCore.scala:269-291](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L269-L291) |
+| WB | Pipeline latch (`wb_reg_*`). RegFile write and exception commit. | [RocketCore.scala:293-311](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L293-L311) |
 
 > ⚠️ Consequently there is **no symmetric `id_reg_*` register group.** The only actual registers in the ID stage are a handful of state bits such as
-> `id_reg_fence` and `id_reg_pause` ([:166](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L166), [:339](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L339)).
+> `id_reg_fence` and `id_reg_pause` ([:166](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L166), [:339](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L339)).
 
 ---
 
@@ -82,14 +82,14 @@ This section collects the minimum background needed for the rest of the document
 - **BTB** (Branch Target Buffer): caches PC → predicted target and CFI type. **BHT** (Branch History Table): predicts the direction (taken/not-taken) of conditional branches. **RAS** (Return Address Stack): pushes the return address on a `call` and pops it on a `ret`.
 - In Rocket the **BHT and RAS are contained inside the `BTB` module**, and that module **lives in the Frontend**. Update kinds are distinguished by `CFIType` (call/ret/jump/branch).
 - **Boundary with the core**: the core only consumes prediction results (`*_reg_btb_resp`) and sends updates (`btb_update`/`bht_update`); it **ties off the RAS** (§11.3).
-- Code: [`BTB.scala`](generators/rocket-chip/src/main/scala/rocket/BTB.scala) — `BTB` ([:185](generators/rocket-chip/src/main/scala/rocket/BTB.scala#L185)), `BHT` ([:75](generators/rocket-chip/src/main/scala/rocket/BTB.scala#L75)), `RAS` ([:39](generators/rocket-chip/src/main/scala/rocket/BTB.scala#L39)).
+- Code: [`BTB.scala`](../generators/rocket-chip/src/main/scala/rocket/BTB.scala) — `BTB` ([:185](../generators/rocket-chip/src/main/scala/rocket/BTB.scala#L185)), `BHT` ([:75](../generators/rocket-chip/src/main/scala/rocket/BTB.scala#L75)), `RAS` ([:39](../generators/rocket-chip/src/main/scala/rocket/BTB.scala#L39)).
 
 ### 2.3 The D-cache layer: HellaCache (DCache vs NonBlockingCache)
 
 - `HellaCache` is an **abstract interface** (`HellaCacheIO`) with two implementations:
-  - **`DCache`** ([DCache.scala](generators/rocket-chip/src/main/scala/rocket/DCache.scala)): pipelined, with ECC support. Selected when `nMSHRs == 0`.
-  - **`NonBlockingCache`** ([NBDcache.scala](generators/rocket-chip/src/main/scala/rocket/NBDcache.scala)): the traditional multiple-**MSHR** (Miss Status Handling Register) organization. Selected when `nMSHRs ≥ 1`.
-  - The choice is made by `HellaCacheFactory` from the parameters ([HellaCache.scala:263-266](generators/rocket-chip/src/main/scala/rocket/HellaCache.scala#L263-L266)); a scratchpad mode also exists.
+  - **`DCache`** ([DCache.scala](../generators/rocket-chip/src/main/scala/rocket/DCache.scala)): pipelined, with ECC support. Selected when `nMSHRs == 0`.
+  - **`NonBlockingCache`** ([NBDcache.scala](../generators/rocket-chip/src/main/scala/rocket/NBDcache.scala)): the traditional multiple-**MSHR** (Miss Status Handling Register) organization. Selected when `nMSHRs ≥ 1`.
+  - The choice is made by `HellaCacheFactory` from the parameters ([HellaCache.scala:263-266](../generators/rocket-chip/src/main/scala/rocket/HellaCache.scala#L263-L266)); a scratchpad mode also exists.
 - **Both expose the same `HellaCacheIO` (s0/s1/s2)** → the core (this document) never distinguishes between the implementations.
 - What **non-blocking** means here: the pipeline keeps going even on a miss, late completion arrives through `resp.replay`, and a rejection arrives as `s2_nack` (§12, and Doc B Load/Store).
 
@@ -103,7 +103,7 @@ This section collects the minimum background needed for the rest of the document
 
 ## 3. Map of the external interfaces (interaction with hardware outside the core)
 
-The core IO is defined at [RocketCore.scala:138-154](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L138-L154).
+The core IO is defined at [RocketCore.scala:138-154](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L138-L154).
 When a per-type document in Doc B covers "interaction with hardware outside the core", it **links here** and describes only the type-specific differences.
 
 | IO port | Peer block | In which stage | Main use | Related types |
@@ -117,9 +117,9 @@ When a per-type document in Doc B covers "interaction with hardware outside the 
 
 > **Scope decision for the predictors (BTB/BHT/RAS):** Doc B covers them **only up to the core interface** (the concepts are in §2.2).
 > That is, it describes the `io.imem.btb_update` / `io.imem.bht_update` the core sends and the `*_reg_btb_resp` it consumes, and nothing more;
-> the internal structure of the prediction hardware and the **RAS** are the responsibility of the Frontend and [`BTB.scala`](generators/rocket-chip/src/main/scala/rocket/BTB.scala), which are linked rather than described.
+> the internal structure of the prediction hardware and the **RAS** are the responsibility of the Frontend and [`BTB.scala`](../generators/rocket-chip/src/main/scala/rocket/BTB.scala), which are linked rather than described.
 > The reason: the core never touches the RAS directly and ties it off —
-> `io.imem.ras_update := DontCare` [RocketCore.scala:1121-1122](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1121-L1122).
+> `io.imem.ras_update := DontCare` [RocketCore.scala:1121-1122](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1121-L1122).
 
 ---
 
@@ -129,27 +129,28 @@ These are the hardware blocks that `Rocket` (more precisely the inner `RocketImp
 
 | Module | Instantiation site | Role | Related section |
 |---|---|---|---|
-| `IBuf` | [:317](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L317) | Frontend↔core instruction buffer (RVC expansion and alignment) | §7.1 |
-| `CSRFile` (`csr`) | [:347](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L347) | CSRs, exceptions, interrupts, privilege state | §13, §7.4 |
-| `BreakpointUnit` (`bpu`) | [:421](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L421) | hardware breakpoints/watchpoints | §13 |
-| `ALU` (`alu`) | [:511](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L511) | arithmetic, logic, shift, compare, address addition | §7.2 |
-| `MulDiv` (`div`) | [:518](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L518) | division (plus non-pipelined multiplication) | §7.2, §12 |
-| `PipelinedMultiplier` (`mul`, optional) | [:526](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L526) | fixed-latency multiplication (`pipelinedMul`) | §7.2 |
-| `Arbiter` (`ll_arb`) | [:784](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L784) | long-latency writeback arbitration (div/rocc/vec) | §12 |
-| `RegFile` (`rf`, a plain class) | [:342](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L342) | integer register file | §7.1, §7.4 |
-| `Scoreboard` ×2 (plain classes) | [:1007](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1007), [:1043](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1043) | tracks integer/FP long-latency destinations | §12 |
-| (optional) vector decoder / `TraceCoreIngress` / `DebugROB` | [:357](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L357) / [:835](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L835) / [:962](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L962) | vector decode / trace / debug ROB | (out of scope) |
+| `IBuf` | [:317](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L317) | Frontend↔core instruction buffer (RVC expansion and alignment) | §7.1 |
+| `CSRFile` (`csr`) | [:347](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L347) | CSRs, exceptions, interrupts, privilege state | §13, §7.4 |
+| `BreakpointUnit` (`bpu`) | [:421](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L421) | hardware breakpoints/watchpoints | §13 |
+| `ALU` (`alu`) | [:511](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L511) | arithmetic, logic, shift, compare, address addition | §7.2 |
+| `MulDiv` (`div`) | [:518](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L518) | division (plus non-pipelined multiplication) | §7.2, §12 |
+| `PipelinedMultiplier` (`mul`, optional) | [:526](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L526) | fixed-latency multiplication (`pipelinedMul`) | §7.2 |
+| `Arbiter` (`ll_arb`) | [:784](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L784) | long-latency writeback arbitration (div/rocc/vec) | §12 |
+| `RegFile` (`rf`, a plain class) | [:342](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L342) | integer register file | §7.1, §7.4 |
+| `Scoreboard` ×2 (plain classes) | [:1007](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1007), [:1043](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1043) | tracks integer/FP long-latency destinations | §12 |
+| (optional) vector decoder / `TraceCoreIngress` / `DebugROB` | [:357](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L357) / [:835](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L835) / [:962](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L962) | vector decode / trace / debug ROB | (out of scope) |
 
 - **`Module` vs plain class**: `RegFile` and `Scoreboard` are not Chisel `Module`s but helper classes that create their `Mem`/`Reg` state directly inside the core module.
-- **Clock gating**: most of the logic above lives in the inner class `RocketImpl`, and the whole of it is wrapped in `withClock(gated_clock)` so that it falls into the clock-gating domain ([:169-173](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L169-L173), [:1306](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1306)). The intent is to stop the clock while the core is idle to save power.
-  - **The gating is off by default.** It is controlled by `clockGate` (`RocketCoreParams`), whose default is `false` ([:52](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L52)), and `gated_clock` is then simply `clock` — no `ClockGate` cell is emitted at all ([:169-171](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L169-L171)). The logic that computes the enable (`clock_en`, `long_latency_stall`, `imem_might_request_reg`) is likewise generated only under `if (rocketParams.clockGate)` ([:1198](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1198)). Turning it on takes the `WithCoreClockGatingEnabled` fragment.
-  - So in the reference configuration of §5 the "gated-clock domain" is a **structural boundary only**, and every stage is clocked normally. The CSR file takes a separate `ungated_clock` in either case, since its time counter must keep running ([:857](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L857)).
+- **Clock gating**: most of the logic above lives in the inner class `RocketImpl`, and the whole of it is wrapped in `withClock(gated_clock)` so that it falls into the clock-gating domain ([:169-173](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L169-L173), [:1306](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1306)). The intent is to stop the clock while the core is idle to save power.
+  - **The gating is off by default.** It is controlled by `clockGate` (`RocketCoreParams`), whose default is `false` ([:52](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L52)), and `gated_clock` is then simply `clock` — no `ClockGate` cell is emitted at all ([:169-171](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L169-L171)). The enable logic (`clock_en`, `long_latency_stall`) is likewise generated only under `if (rocketParams.clockGate)` ([:1198](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1198)) — except `imem_might_request_reg` ([:1085-1088](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1085-L1088)), which the Frontend needs either way.
+  - **Five cells, two knobs.** `rocketParams.clockGate` (`WithCoreClockGatingEnabled`) emits three — core, **Frontend/I$** ([Frontend.scala:97-99](../generators/rocket-chip/src/main/scala/rocket/Frontend.scala#L97-L99)), **FPU** ([FPU.scala:746-748](../generators/rocket-chip/src/main/scala/tile/FPU.scala#L746-L748)); `dcache.clockGate` (`WithL1DCacheClockGating`) emits two — **D$** ([DCache.scala:114](../generators/rocket-chip/src/main/scala/rocket/DCache.scala#L114)), **PTW** ([PTW.scala:248](../generators/rocket-chip/src/main/scala/rocket/PTW.scala#L248)). All are also runtime-disableable via chicken CSR `0x7c1` bits 0/1/2 ([CustomCSRs.scala:43-45](../generators/rocket-chip/src/main/scala/tile/CustomCSRs.scala#L43-L45)).
+  - So in the reference configuration of §5 the "gated-clock domain" is a **structural boundary only**, and every stage is clocked normally. The CSR file takes a separate `ungated_clock` in either case, since its time counter must keep running ([:857](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L857)).
 
 ---
 
 ## 5. Configuration parameters (RocketCoreParams)
 
-The line numbers and the descriptions here assume a particular configuration. The core's configuration knobs live in `RocketCoreParams` ([:16-62](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L16-L62)).
+The line numbers and the descriptions here assume a particular configuration. The core's configuration knobs live in `RocketCoreParams` ([:16-62](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L16-L62)).
 
 | Parameter | Meaning | Assumed here |
 |---|---|---|
@@ -167,7 +168,7 @@ The line numbers and the descriptions here assume a particular configuration. Th
 
 > In other words, this document assumes roughly an **RV64GC + VM + pipelined-mul** configuration. Other configurations can change some paths (for example non-pipelined multiplication, or the address path when VM is disabled).
 
-**Relation to the stock configurations:** the closest fragment is `WithNBigCores(n)`, which overrides only `mulDiv` and leaves every other row above at its default. Chipyard's own `RocketConfig` (= `WithNHugeCores(1)` + `AbstractConfig`) sits one step further away: it additionally enables Zba/Zbb/Zbs and sets `fpu = FPUParams(minFLen = 16)` — the two knobs that surface in the ALU result mux (`Zbb`) and in the FP load-response path (`minFLen`). Neither fragment yields `pipelinedMul`; that takes an explicit `WithCustomFastMulDiv(mUnroll = 64)` ([Configs.scala](generators/rocket-chip/src/main/scala/rocket/Configs.scala)).
+**Relation to the stock configurations:** the closest fragment is `WithNBigCores(n)`, which overrides only `mulDiv` and leaves every other row above at its default. Chipyard's own `RocketConfig` (= `WithNHugeCores(1)` + `AbstractConfig`) sits one step further away: it additionally enables Zba/Zbb/Zbs and sets `fpu = FPUParams(minFLen = 16)` — the two knobs that surface in the ALU result mux (`Zbb`) and in the FP load-response path (`minFLen`). Neither fragment yields `pipelinedMul`; that takes an explicit `WithCustomFastMulDiv(mUnroll = 64)` ([Configs.scala](../generators/rocket-chip/src/main/scala/rocket/Configs.scala)).
 
 ---
 
@@ -180,8 +181,8 @@ At each stage boundary the values are **copied** into the next register group. W
 ```
 id_ctrl ──(ID→EX)──▶ ex_ctrl ──(EX→MEM)──▶ mem_ctrl ──(MEM→WB)──▶ wb_ctrl
 ```
-- Definition: [RocketCore.scala:248-250](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L248-L250)
-- Copies: `ex_ctrl := id_ctrl` ([:538](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L538)), `mem_ctrl := ex_ctrl` ([:648](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L648)), `wb_ctrl := mem_ctrl` ([:717](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L717))
+- Definition: [RocketCore.scala:248-250](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L248-L250)
+- Copies: `ex_ctrl := id_ctrl` ([:538](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L538)), `mem_ctrl := ex_ctrl` ([:648](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L648)), `wb_ctrl := mem_ctrl` ([:717](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L717))
 - The meaning of each field (`alu_fn`, `mem_cmd`, `wxd`, …) is in §8.
 
 ### 6.2 Data/state registers (only the frequently referenced ones)
@@ -197,15 +198,16 @@ id_ctrl ──(ID→EX)──▶ ex_ctrl ──(EX→MEM)──▶ mem_ctrl ─�
 | — | `ex_reg_btb_resp` | `mem_reg_btb_resp` | — | prediction result (Branch/Jump) |
 | — | — | `mem_br_taken` | `wb_reg_br_taken` | actual branch direction |
 
-- `valid` updates: `ex_reg_valid := !ctrl_killd` ([:532](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L532)), `mem_reg_valid := !ctrl_killx` ([:638](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L638)), `wb_reg_valid := !ctrl_killm` ([:712](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L712)). → **A kill signal clearing the next `valid`** is the basic mechanism of pipeline invalidation.
-- The data registers are copied inside conditional `when` blocks (ID→EX: [:537-599](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L537-L599), EX→MEM: [:645-682](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L645-L682), MEM→WB: [:716-734](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L716-L734)).
+- `valid` updates: `ex_reg_valid := !ctrl_killd` ([:532](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L532)), `mem_reg_valid := !ctrl_killx` ([:638](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L638)), `wb_reg_valid := !ctrl_killm` ([:712](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L712)). → **A kill signal clearing the next `valid`** is the basic mechanism of pipeline invalidation.
+- The result row crosses MEM→WB through a wire, not directly: `mem_reg_wdata` → **`mem_int_wdata`** ([:631](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L631)) → `wb_reg_wdata` (§7.3 ①). Only `*_reg_*` names are registers, so that wire is absent from the table above.
+- The data registers are copied inside conditional `when` blocks (ID→EX: [:537-599](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L537-L599), EX→MEM: [:645-682](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L645-L682), MEM→WB: [:716-734](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L716-L734)).
 
 ---
 
 ## 7. The per-stage skeleton
 
 Each per-type document follows this order (ID→EX→MEM→WB) and links back to the subsections below for everything it shares.
-The code excerpts below are taken from [`RocketCore.scala`](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala), with the original line number prefixed to each line. Where line numbers skip, intervening lines have been elided (`/* … */`) for readability.
+The code excerpts below are taken from [`RocketCore.scala`](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala), with the original line number prefixed to each line. Where line numbers skip, intervening lines have been elided (`/* … */`) for readability.
 
 ### 7.1 ID (Decode) — the combinational stage
 
@@ -280,7 +282,7 @@ The code excerpts below are taken from [`RocketCore.scala`](generators/rocket-ch
 488    A2_SIZE -> Mux(ex_reg_rvc, 2.S, 4.S)))
 ```
 
-**ImmGen — immediate generation:** when `sel_alu2 = A2_IMM`, the `ex_imm` fed into `ex_op2` is produced by `ImmGen`. Because the immediate field is laid out differently in each instruction format (six of them: I/S/SB/UJ/U/Z), `ImmGen` rearranges the instruction bits according to `sel_imm` and **sign-extends** them into a single `xLen` value. In other words, EX needs no separate immediate unit — one pure combinational function covers every format.
+**ImmGen — immediate generation:** when `sel_alu2 = A2_IMM`, the `ex_imm` fed into `ex_op2` is produced by `ImmGen`. Because the immediate field is laid out differently in each instruction format (six of them: I/S/SB/UJ/U/Z), `ImmGen` rearranges the instruction bits according to `sel_imm` and **sign-extends** them into a single **32-bit** signed value. Widening past 32 bits is left to the consumer — to `xLen` at `ex_op2`, to the PC width at the MEM adder. In other words, EX needs no separate immediate unit — one pure combinational function covers every format.
 
 ```scala
 1370  object ImmGen {
@@ -298,7 +300,8 @@ The code excerpts below are taken from [`RocketCore.scala`](generators/rocket-ch
 ```
 
 - Format mapping in brief: `IMM_I` = I-type (12b), `IMM_S` = store offset, `IMM_SB` = branch offset (§11), `IMM_UJ` = JAL offset, `IMM_U` = upper 20b (LUI/AUIPC), `IMM_Z` = CSR zimm (no sign extension).
-- The same `ImmGen` is reused for the branch/jump target computation in the MEM stage (§7.3 ②, `ImmGen(IMM_SB, …)` / `ImmGen(IMM_UJ, …)`).
+- The same `ImmGen` is called again in the MEM stage to **lay out the offset bits** of a branch/JAL target — it only reorders and sign-extends the immediate field; the `mem_reg_pc + …` adder that actually forms the target is written separately (§7.3 ②, `ImmGen(IMM_SB, …)` / `ImmGen(IMM_UJ, …)`).
+  - This is **code** reuse, not a shared block: `ImmGen` is a Scala `object`, not a `Module`, so each call site elaborates its own copy. Because `sel` is a constant here (unlike `ex_ctrl.sel_imm` in EX), the MEM copy constant-folds down to pure wiring.
 
 **② ALU:** the selected `ex_op1/op2` enter the ALU, and `alu_fn`/`alu_dw` determine the operation. The output is consumed in three ways — the arithmetic result `out`, the branch comparison `cmp_out`, and the memory address `adder_out`.
 
@@ -334,9 +337,9 @@ The code excerpts below are taken from [`RocketCore.scala`](generators/rocket-ch
 530  }
 ```
 
-- **Difference in the multiply result path**: the pipelined multiplier has a fixed latency, so its result enters the `rf_wdata` mux in WB directly through the `wb_ctrl.mul` path (§7.4 ③, [:830](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L830)), whereas division (and non-pipelined multiplication) has variable latency and writes back out of order through the `ll_arb` path (§12).
+- **Difference in the multiply result path**: the pipelined multiplier has a fixed latency, so its result enters the `rf_wdata` mux in WB directly through the `wb_ctrl.mul` path (§7.4 ③, [:830](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L830)), whereas division (and non-pipelined multiplication) has variable latency and writes back out of order through the `ll_arb` path (§12).
 
-**④ Memory request issue (s0):** for a `mem` instruction, the request is sent to the D$ during the EX cycle. There is **no dedicated address adder — the ALU is reused** for address computation: loads and stores are decoded with `sel_alu1=A1_RS1`, `sel_alu2=A2_IMM`, `alu_fn=FN_ADD`, so `alu.io.adder_out = base(rs1) + offset(imm)` is the effective address. That value passes through `encodeVirtualAddress` (an internal `Mux` that compresses the VA to `vaddrBits+1`, [:1320-1327](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1320-L1327)) on its way to `io.dmem.req.bits.addr`. → Doc B (Load/Store).
+**④ Memory request issue (s0):** for a `mem` instruction, the request is sent to the D$ during the EX cycle. There is **no dedicated address adder — the ALU is reused** for address computation: loads and stores are decoded with `sel_alu1=A1_RS1`, `sel_alu2=A2_IMM`, `alu_fn=FN_ADD`, so `alu.io.adder_out = base(rs1) + offset(imm)` is the effective address. That value passes through `encodeVirtualAddress` (an internal `Mux` that compresses the VA to `vaddrBits+1`, [:1320-1327](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1320-L1327)) on its way to `io.dmem.req.bits.addr`. → Doc B (Load/Store).
 
 ```scala
 1160  io.dmem.req.valid     := ex_reg_valid && ex_ctrl.mem
@@ -362,6 +365,9 @@ The code excerpts below are taken from [`RocketCore.scala`](generators/rocket-ch
 609  val ctrl_killx = take_pc_mem_wb || replay_ex || !ex_reg_valid
 ```
 
+- **load-use hazard:** the `ex_reg_load_use` above is armed one cycle earlier, in ID, by `id_load_use := mem_reg_valid && data_hazard_mem && mem_ctrl.mem` ([:1031](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1031)) latched at [:559](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L559). Note it is **not** a term of `ctrl_stalld` (§10.2): a bypassable load (LW/LD) is let through, and only replays here if that load turns out to miss. → central to Doc B (Load/Store).
+- The structural terms are the **fallback** for the preventive stalls in §10.2 (`dcache_blocked`, `rocc_blocked`, div busy): ID tries to hold the instruction back cheaply, and this replay catches whatever slips past.
+
 ### 7.3 MEM (Memory)
 
 > **It is called the "Memory" stage, but it is not reserved for memory instructions.** Every instruction passes through it.
@@ -369,19 +375,14 @@ The code excerpts below are taken from [`RocketCore.scala`](generators/rocket-ch
 > - **Non-memory instructions (ALU, mul/div, CSR, …)**: the s1 signals are meaningless (`mem_ctrl.mem=0` → no `io.dmem` request), and the stage is a **pass-through that carries the EX result `mem_reg_wdata` down to WB**.
 > - **Branches and jumps**: instead of arithmetic, this is where the direction is resolved and the redirect is finalized (②, §11).
 
-The integer result handed to WB is finally selected at the end of the stage as `mem_int_wdata` — normally `mem_reg_wdata`, except for a path that swaps in `mem_br_target` to handle a jump's link value (detailed in Doc B (JAL/JALR)):
-
-```scala
-631  val mem_int_wdata = Mux(!mem_reg_xcpt && (mem_ctrl.jalr ^ mem_npc_misaligned),
-                           mem_br_target, mem_reg_wdata.asSInt).asUInt
-```
-
 **① Latching the result and the branch direction (EX→MEM boundary):** the ALU's arithmetic result and comparison result are captured in registers here. `mem_br_taken` is the actual branch direction. For a non-memory instruction `mem_reg_wdata` is already the final result; for a memory instruction it is the effective address (§7.2 ④).
 
 ```scala
 666  mem_reg_wdata := Mux(ex_reg_set_vconfig, ex_new_vl.getOrElse(alu.io.out), alu.io.out)
 667  mem_br_taken  := alu.io.cmp_out
 ```
+
+At the end of the stage this value is selected one last time into the wire **`mem_int_wdata`** ([RocketCore.scala:631](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L631)), which is what §7.4 ① latches into `wb_reg_wdata`. It is `mem_reg_wdata` for almost everything; only the **link value of JAL/JALR**, and on a misaligned target the **address reported in `tval`** (§13), are swapped in from `mem_br_target` (②). The condition itself is detailed in Doc B (JAL/JALR).
 
 **② Branch/jump target computation and resolution (finalized here):** the next PC is computed, and if it disagrees with the prediction, the redirect signal `take_pc_mem` is raised. → §11.
 
@@ -405,7 +406,7 @@ The integer result handed to WB is finally selected at the end of the stage as `
 1181  io.dmem.s1_kill := killm_common || mem_ldst_xcpt || fpu_kill_mem || vec_kill_mem
 ```
 
-**④ Sending predictor updates and gathering exceptions (second pass):** BTB/BHT updates are sent to the Frontend ([:1101-1119](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1101-L1119)), and misaligned-fetch and load/store breakpoint exceptions are gathered.
+**④ Sending predictor updates and gathering exceptions (second pass):** BTB/BHT updates are sent to the Frontend ([:1101-1119](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1101-L1119)), and misaligned-fetch and load/store breakpoint exceptions are gathered.
 
 ```scala
 690  val (mem_xcpt, mem_cause) = checkExceptions(List(
@@ -436,7 +437,7 @@ The integer result handed to WB is finally selected at the end of the stage as `
      }
 ```
 
-**② Memory s2 (load result, nack, exception):** the D$ response arrives here. `s2_nack` causes a replay; `s2_xcpt` commits a load/store fault.
+**② Memory s2 and exception gathering (third pass):** the D$ response arrives here. `s2_nack` causes a replay; the eight `s2_xcpt` faults (page / guest-page / access / misaligned, each for load and store) are the last new exception candidates to enter, and are committed by ⑤.
 
 ```scala
 736  val (wb_xcpt, wb_cause) = checkExceptions(List(
@@ -474,7 +475,7 @@ The integer result handed to WB is finally selected at the end of the stage as `
 | **Store / Branch** | — | none (`wxd=0`) | no RegFile write |
 | **FP (fp destination)** | — (not the integer RF) | the `wfd` path | the FPU completes separately; only fp→int moves use `wb_reg_wdata` (①) |
 
-- Since `wb_wen = wb_valid && wb_ctrl.wxd`, **stores and branches, which have `wxd=0`, never write the integer RegFile.** A destination of `x0` (rd=0) is likewise ignored by `RegFile.write` ([:1360-1366](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1360-L1366)).
+- Since `wb_wen = wb_valid && wb_ctrl.wxd`, **stores and branches, which have `wxd=0`, never write the integer RegFile.** A destination of `x0` (rd=0) is likewise ignored by `RegFile.write` ([:1360-1366](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1360-L1366)).
 - FP instructions write the FP register file through `wfd` rather than `wxd` (inside the FPU); the only case that writes the integer RF is an fp→int move (FCVT.W/FMV.X/comparisons), through `io.fpu.toint_data` in ①.
 
 **④ CSR read/write:** a CSR instruction accesses the CSRFile in WB through `csr.io.rw`. The address and write data come from `wb_reg_inst`/`wb_reg_wdata`, and the read result `csr.io.rw.rdata` returns through the `rf_wdata` mux of ③ (the `wb_ctrl.csr =/= CSR.N` path) to be written to the integer register.
@@ -498,9 +499,9 @@ The integer result handed to WB is finally selected at the end of the stage as `
 
 An instruction's "character" is summarized at decode time into the **control signal bundle `IntCtrlSigs`**. All of Doc B distinguishes instruction types by these fields.
 
-- Bundle definition: [`IDecode.scala:19-48`](generators/rocket-chip/src/main/scala/rocket/IDecode.scala#L19-L48)
+- Bundle definition: [`IDecode.scala:19-48`](../generators/rocket-chip/src/main/scala/rocket/IDecode.scala#L19-L48)
   *(note that the file is **`IDecode.scala`**, not `control-signals.scala`.)*
-- The opcode ↔ signal mapping for each instruction: the `table` in `IDecode.scala`, with the opcode constants in [`Instructions.scala`](generators/rocket-chip/src/main/scala/rocket/Instructions.scala).
+- The opcode ↔ signal mapping for each instruction: the `table` in `IDecode.scala`, with the opcode constants in [`Instructions.scala`](../generators/rocket-chip/src/main/scala/rocket/Instructions.scala).
 
 ### How the decode table is built (at elaboration time)
 
@@ -543,8 +544,8 @@ This table is consumed by `.decode(id_inst(0), decode_table)` in §7.1 ②. `dec
 | `legal` | whether the instruction is legal | Bool |
 | `branch` / `jal` / `jalr` | control-flow kind | Bool |
 | `mem` | memory access instruction | Bool |
-| `mem_cmd` | memory op | `M_XRD` (load) / `M_XWR` (store) / AMO / `M_XLR`/`M_XSC` … ([Consts.scala](generators/rocket-chip/src/main/scala/rocket/Consts.scala)) |
-| `alu_fn` | **ALU operation select** (the field is named `alu_fn`, not `ex_cmd`) | `FN_ADD`, `FN_SUB`, … ([ALU.scala](generators/rocket-chip/src/main/scala/rocket/ALU.scala)) |
+| `mem_cmd` | memory op | `M_XRD` (load) / `M_XWR` (store) / AMO / `M_XLR`/`M_XSC` … ([Consts.scala](../generators/rocket-chip/src/main/scala/rocket/Consts.scala)) |
+| `alu_fn` | **ALU operation select** (the field is named `alu_fn`, not `ex_cmd`) | `FN_ADD`, `FN_SUB`, … ([ALU.scala](../generators/rocket-chip/src/main/scala/rocket/ALU.scala)) |
 | `alu_dw` | ALU data width | `DW_32` / `DW_64` (= `DW_XPR`) |
 | `sel_alu1` | op1 source | `A1_RS1` / `A1_PC` / `A1_RS1SHL` |
 | `sel_alu2` | op2 source | `A2_RS2` / `A2_IMM` / `A2_SIZE` / `A2_ZERO` |
@@ -559,8 +560,8 @@ This table is consumed by `.decode(id_inst(0), decode_table)` in §7.1 ②. `dec
 | `fence` / `fence_i` / `amo` | synchronization/atomicity | Bool |
 
 > **Frequently used derived expressions** (repeated throughout Doc B):
-> - load = `mem && isRead(mem_cmd)`, store = `mem && isWrite(mem_cmd)` ([:650-651](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L650-L651))
-> - pure arithmetic (ALU) = `wxd && !(jal||jalr||mem||fp||mul||div||csr=/=N)` ([:185](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L185))
+> - load = `mem && isRead(mem_cmd)`, store = `mem && isWrite(mem_cmd)` ([:650-651](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L650-L651))
+> - pure arithmetic (ALU) = `wxd && !(jal||jalr||mem||fp||mul||div||csr=/=N)` ([:185](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L185))
 
 ---
 
@@ -568,7 +569,7 @@ This table is consumed by `.decode(id_inst(0), decode_table)` in §7.1 ②. `dec
 
 When an instruction's source register is the result of an earlier instruction that has not reached the RegFile yet, the **latest value is bypassed directly to the EX input** as the instruction enters EX.
 
-**The list of bypass sources** ([:463-468](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L463-L468)):
+**The list of bypass sources** ([:463-468](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L463-L468)):
 
 | Source | Condition | Value supplied |
 |---|---|---|
@@ -577,9 +578,9 @@ When an instruction's source register is the result of an earlier instruction th
 | MEM result (non-memory) | `mem_reg_valid && mem_ctrl.wxd && !mem_ctrl.mem` | `wb_reg_wdata` |
 | MEM result (including memory) | `mem_reg_valid && mem_ctrl.wxd` | `dcache_bypass_data` (fast-load) |
 
-- **Address match detection:** `id_bypass_src` ([:468](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L468)); which source to use is latched into `ex_reg_rs_bypass/_lsb/_msb` at the ID→EX boundary ([:574-583](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L574-L583)).
-- **The actual mux in EX:** `ex_rs` ([:471-476](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L471-L476)).
-- **fast-load bypass:** load data is bypassed straight out of the D$ response (`dcache_bypass_data`) ([:454-457](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L454-L457)) — detailed in Doc B (Load/Store).
+- **Address match detection:** `id_bypass_src` ([:468](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L468)); which source to use is latched into `ex_reg_rs_bypass/_lsb/_msb` at the ID→EX boundary ([:574-583](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L574-L583)).
+- **The actual mux in EX:** `ex_rs` ([:471-476](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L471-L476)).
+- **fast-load bypass:** load data is bypassed straight out of the D$ response (`dcache_bypass_data`) ([:454-457](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L454-L457)) — detailed in Doc B (Load/Store).
 
 Whatever forwarding cannot cover becomes a **stall** (§10).
 
@@ -587,20 +588,30 @@ Whatever forwarding cannot cover becomes a **stall** (§10).
 
 ## 10. Hazard / stall / kill
 
-### 10.1 Data hazards (no bypass possible → interlock)
+### 10.1 Data hazards between pipeline stages (per-stage interlock)
 
 When an earlier instruction in EX/MEM/WB has not yet resolved the same destination register, and it is **of a kind that cannot be bypassed**, ID is stalled.
 
-- Checked operands: `hazard_targets` = {rs1, rs2, rd} ([:999-1001](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L999-L1001)).
+> **Scope of this subsection:** only the **three per-stage terms** below. `ctrl_stalld` carries further data-hazard terms — `id_sboard_hazard` and the FP `id_stall_fpu` — but those track *long-latency* destinations rather than a specific stage, and are covered in **§12**.
+
+- Checked operands: `hazard_targets` = {rs1, rs2, rd} ([:999-1001](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L999-L1001)).
 - One hazard term per stage:
-  - `id_ex_hazard` — when `ex_cannot_bypass` (csr/jalr/mem/mul/div/fp/rocc/vec) ([:1018-1021](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1018-L1021))
-  - `id_mem_hazard` — when `mem_cannot_bypass` (csr/slow load/mul/div/fp, …) ([:1024-1030](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1024-L1030))
-  - `id_wb_hazard` — while waiting on a long-latency writeback (scoreboard) ([:1038-1040](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1038-L1040))
-- **load-use hazard:** `id_load_use := mem_reg_valid && data_hazard_mem && mem_ctrl.mem` ([:1031](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1031)) → central to Doc B (Load/Store).
+  - `id_ex_hazard` — when `ex_cannot_bypass` (csr/jalr/mem/mul/div/fp/rocc/vec) ([:1018-1021](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1018-L1021))
+  - `id_mem_hazard` — when `mem_cannot_bypass` (csr/slow load/mul/div/fp, …) ([:1024-1030](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1024-L1030))
+  - `id_wb_hazard` — when the WB instruction sets the scoreboard (`wb_set_sboard`), i.e. its RegFile write this cycle is not the real value ([:1038-1040](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1038-L1040)). It covers only that one cycle; `id_sboard_hazard` takes over from the next one (§12).
 
 ### 10.2 Stall (halting ID)
 
-The OR terms of `ctrl_stalld` ([:1061-1075](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1061-L1075)): the hazards above, plus the scoreboard hazard, single-step, fp/vec busy, `dcache_blocked`, `rocc_blocked`, div busy, fence (`id_do_fence`), CSR stall, `id_reg_pause`, and `traceStall`.
+`ctrl_stalld` ([:1061-1075](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1061-L1075)) is the single signal that halts ID, and it is a flat OR of about fifteen terms. §10.1 supplies three of them; the rest fall into four groups:
+
+| Group | Terms | Why ID must wait |
+|---|---|---|
+| **Data hazard** | `id_ex_hazard`, `id_mem_hazard`, `id_wb_hazard` (§10.1), `id_sboard_hazard`, `id_stall_fpu`, `id_vconfig_hazard` | the value is not available yet (§9, §12) |
+| **Resource busy** | `id_ctrl.mem && dcache_blocked`, `id_ctrl.rocc && rocc_blocked`, `id_ctrl.div && …` | the unit cannot accept a request |
+| **Ordering / sync** | `id_do_fence`, `csr.io.csr_stall`, fp/vector CSR not ready | an earlier operation must drain first |
+| **External / misc** | `csr.io.singleStep`, `!clock_en`, `id_reg_pause`, `io.traceStall` | debug step, clock gating, WFI-pause, trace backpressure |
+
+> **The "resource busy" group is preventive.** These conditions do not mean the instruction *cannot* proceed — they mean it would probably hit `replay_ex_structural` in EX (§7.2 ⑤). Stalling in ID costs one cycle; replaying from EX costs three or more, so the core stalls early on a guess. The source says so directly: `// reduce odds of replay` ([:1070](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1070)), `// reduce activity during D$ misses` ([:1068](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1068)). §7.2 ⑤ is the exact fallback for whatever these guesses miss.
 
 ### 10.3 Kill (pipeline invalidation)
 
@@ -608,9 +619,9 @@ Each stage's kill signal clears the next `valid`. A flush is precisely this **ki
 
 | Signal | Definition | Triggers in brief |
 |---|---|---|
-| `ctrl_killd` | [:1076](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1076) | instruction invalid / replay / `take_pc_mem_wb` / `ctrl_stalld` / interrupt |
-| `ctrl_killx` | [:609](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L609) | `take_pc_mem_wb` / `replay_ex` / `!ex_reg_valid` |
-| `ctrl_killm` | [:707-709](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L707-L709) | `dcache_kill_mem` / `take_pc_wb` / `mem_xcpt` / `!mem_reg_valid` … |
+| `ctrl_killd` | [:1076](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1076) | instruction invalid / replay / `take_pc_mem_wb` / `ctrl_stalld` / interrupt |
+| `ctrl_killx` | [:609](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L609) | `take_pc_mem_wb` / `replay_ex` / `!ex_reg_valid` |
+| `ctrl_killm` | [:707-709](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L707-L709) | `dcache_kill_mem` / `take_pc_wb` / `mem_xcpt` / `!mem_reg_valid` … |
 
 ---
 
@@ -621,13 +632,13 @@ Each stage's kill signal clears the next `valid`. A flush is precisely this **ki
 
 ### 11.1 Step by step
 
-1. **EX:** the ALU performs the condition comparison → at the end of the cycle, `mem_br_taken := alu.io.cmp_out` ([:667](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L667)).
+1. **EX:** the ALU performs the condition comparison → at the end of the cycle, `mem_br_taken := alu.io.cmp_out` ([:667](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L667)).
 2. **MEM:** the real next PC is compared against the prediction.
-   - `mem_br_target` / `mem_npc` computation ([:622-626](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L622-L626))
-   - `mem_direction_misprediction`, `mem_misprediction` ([:634-635](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L634-L635))
-   - **`take_pc_mem := mem_reg_valid && !mem_reg_xcpt && (mem_misprediction || mem_reg_sfence)`** ([:636](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L636))
+   - `mem_br_target` / `mem_npc` computation ([:622-626](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L622-L626))
+   - `mem_direction_misprediction`, `mem_misprediction` ([:634-635](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L634-L635))
+   - **`take_pc_mem := mem_reg_valid && !mem_reg_xcpt && (mem_misprediction || mem_reg_sfence)`** ([:636](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L636))
 3. **WB:** exception, CSR, and flush-type redirects.
-   - **`take_pc_wb := replay_wb || wb_xcpt || csr.io.eret || wb_reg_flush_pipe`** ([:770](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L770))
+   - **`take_pc_wb := replay_wb || wb_xcpt || csr.io.eret || wb_reg_flush_pipe`** ([:770](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L770))
 
 ### 11.2 Redirect priority
 
@@ -641,14 +652,14 @@ io.imem.req.bits.pc =
     Mux(replay_wb,       wb_reg_pc,      // 2nd: replay
                          mem_npc))       // 3rd: flush / branch mispredict
 ```
-([:1078-1083](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1078-L1083))
+([:1078-1083](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1078-L1083))
 
 So **WB (`take_pc_wb`) outranks MEM (`take_pc_mem`)**, and the mispredict redirect from MEM takes effect only when no later redirect arrives from WB. Both signals kill (§10.3) the upstream stages, which is the flush.
 
 ### 11.3 Interface to the predictors (core side only)
 
-- Consumed: `ex_reg_btb_resp` → `mem_reg_btb_resp` (the prediction result) ([:255](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L255), [:272](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L272)).
-- Sent: `io.imem.btb_update` (with a `CFIType.call/ret/jump/branch` hint) ([:1101-1112](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1101-L1112)), `io.imem.bht_update` ([:1114-1119](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1114-L1119)).
+- Consumed: `ex_reg_btb_resp` → `mem_reg_btb_resp` (the prediction result) ([:255](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L255), [:272](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L272)).
+- Sent: `io.imem.btb_update` (with a `CFIType.call/ret/jump/branch` hint) ([:1101-1112](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1101-L1112)), `io.imem.bht_update` ([:1114-1119](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1114-L1119)).
 - RAS: the core is not involved (`ras_update := DontCare`, §3). It is implemented in the Frontend and `BTB.scala` (concepts in §2.2).
 
 ---
@@ -659,36 +670,46 @@ Ordinary instructions write the RegFile in order at WB, but instructions **whose
 
 ### 12.1 The long-latency writeback path (`ll_arb`)
 
-- A 3-input arbiter: div / rocc / vec ([:784-813](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L784-L813)).
-- The D$ load replay also enters through this write port ([:817-821](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L817-L821)).
-- The final RegFile write mux: `rf_wen = wb_wen || ll_wen`, with `rf_waddr`/`rf_wdata` ([:823-832](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L823-L832)).
+The single RegFile write port is shared by four claimants, resolved in **three tiers**:
+
+| Tier | Claimant | How it wins |
+|---|---|---|
+| **1** | D$ load replay | overrides the arbiter outright — forces `ll_wen`/`ll_waddr` and pulls `ll_arb.io.out.ready` low ([:817-821](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L817-L821)) |
+| **2** | the instruction in WB | `ll_arb.io.out.ready := !wb_wxd` ([:790](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L790)) — the arbiter cannot fire while WB writes |
+| **3** | div / rocc / vec | `Arbiter(new LLWB, 3)` ([:784-813](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L784-L813)) — Chisel's **fixed-priority** arbiter, lowest input index first, so **div > rocc > vec** |
+
+- The D$ replay is **not an arbiter input**; it intercepts the arbiter's output.
+- Tiers 1 and 2 would collide — a forced `ll_wen` steals `rf_waddr` and the WB write would be lost. The collision is **prevented a cycle earlier** rather than resolved here: `dcache_kill_mem = mem_reg_valid && mem_ctrl.wxd && io.dmem.replay_next` ([:702](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L702)) kills MEM as soon as `replay_next` announces the response, so no WB write is pending. The source names it exactly that — `// structural hazard on writeback port`.
+- The final RegFile write mux: `rf_wen = wb_wen || ll_wen`, with `rf_waddr`/`rf_wdata` ([:823-832](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L823-L832)) → §7.4 ③.
 
 ### 12.2 The scoreboard (tracking long-latency destinations)
 
-- `sboard = new Scoreboard(32, true)` ([:1007](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1007)); the class definition is at [:1329-1346](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1329-L1346).
-- **set:** the destination bit is set as a long-latency instruction passes WB — `wb_set_sboard = wb_ctrl.div || wb_dcache_miss || wb_ctrl.rocc || wb_ctrl.vec` ([:764](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L764), set at [:1015](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1015)).
-- **clear:** cleared on the actual late writeback (`ll_wen`) ([:1008](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1008)).
-- **hazard:** while the destination is still outstanding, `id_sboard_hazard` stalls ID ([:1014](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1014)).
+A **32-bit bitmap, one bit per register** (class definition at [:1329-1346](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1329-L1346)). Bit `r` set means *"`x_r` has a late write outstanding that has not landed yet"* — it records the **reservation, never the value**.
+
+- `sboard = new Scoreboard(32, true)` ([:1007](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1007)). The second argument forces bit 0 to read as 0 ([:1337](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1337)), so `x0` never raises a hazard — the same asymmetry as the x0 entry in the §9 bypass list. The FP scoreboard omits it (`new Scoreboard(32)`, [:1043](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1043)) because `f0` is a real register.
+- **set:** the destination bit is set as a long-latency instruction passes WB — `wb_set_sboard = wb_ctrl.div || wb_dcache_miss || wb_ctrl.rocc || wb_ctrl.vec` ([:764](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L764), set at [:1015](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1015)).
+- **clear:** cleared on the actual late writeback (`ll_wen`) ([:1008](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1008)).
+- **hazard:** while the destination is still outstanding, `id_sboard_hazard` stalls ID ([:1014](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1014)) — subject to a same-cycle clear bypass ([:1009-1013](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1009-L1013)).
 
 > This mechanism first appears in **Doc B (Load/Store)** with a load miss, and is completed formally in **Doc B (Mul/Div)**.
-> FP uses the same pattern with its own `fp_sboard` ([:1042-1050](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1042-L1050)).
+> FP uses the same pattern with its own `fp_sboard` ([:1042-1050](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1042-L1050)).
 
 ---
 
 ## 13. The common exception / interrupt path
 
-Exceptions are gathered as candidates in every stage and **committed in WB**. Detection is unified through `checkExceptions` (a priority mux) ([:1308-1309](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1308-L1309)).
+Exceptions are gathered as candidates in every stage and **committed in WB**. Detection is unified through `checkExceptions` (a priority mux) ([:1308-1309](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1308-L1309)).
 
 | Stage | Signals | Representative causes |
 |---|---|---|
-| ID | `id_xcpt`, `id_cause` [:431-442](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L431-L442) | interrupt, breakpoint, fetch page/access fault, illegal instruction |
-| EX | `ex_xcpt`, `ex_cause` [:614-615](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L614-L615) | propagation of the cause passed down from ID |
-| MEM | `mem_xcpt`, `mem_cause` [:690-693](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L690-L693) | misaligned fetch, load/store breakpoint |
-| WB | `wb_xcpt`, `wb_cause` [:736-746](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L736-L746) | D$ s2 page/access/misaligned fault |
+| ID | `id_xcpt`, `id_cause` [:431-442](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L431-L442) | interrupt, breakpoint, fetch page/access fault, illegal instruction |
+| EX | `ex_xcpt`, `ex_cause` [:614-615](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L614-L615) | propagation of the cause passed down from ID |
+| MEM | `mem_xcpt`, `mem_cause` [:690-693](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L690-L693) | misaligned fetch, load/store breakpoint |
+| WB | `wb_xcpt`, `wb_cause` [:736-746](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L736-L746) | D$ s2 page/access/misaligned fault |
 
-- **commit:** `csr.io.exception := wb_xcpt`, `csr.io.cause := wb_cause` ([:859-860](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L859-L860)); the redirect to the trap vector is the `csr.io.evec` path in §11.2.
-- **interrupt:** injected at ID (`csr.io.interrupt` → `ex_reg_xcpt_interrupt`) and propagated down the later stages ([:535](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L535)).
-- The ALU path is reused to compute badaddr on an exception (`sel_alu1/2` are overridden when `id_xcpt`) ([:543-557](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L543-L557)).
+- **commit:** `csr.io.exception := wb_xcpt`, `csr.io.cause := wb_cause` ([:859-860](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L859-L860)); the redirect to the trap vector is the `csr.io.evec` path in §11.2.
+- **interrupt:** injected at ID (`csr.io.interrupt` → `ex_reg_xcpt_interrupt`) and propagated down the later stages ([:535](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L535)).
+- The ALU path is reused to compute badaddr on an exception (`sel_alu1/2` are overridden when `id_xcpt`) ([:543-557](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L543-L557)).
 
 ---
 
@@ -722,28 +743,28 @@ Each per-type document follows the skeleton below, **linking to this document's 
 
 | Signal | Meaning | Line |
 |---|---|---|
-| `id_ctrl` / `ex_ctrl` / `mem_ctrl` / `wb_ctrl` | per-stage control bundles | [248-250](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L248-L250) |
-| `ctrl_killd/killx/killm` | per-stage kill | [1076](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1076)/[609](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L609)/[707](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L707) |
-| `ctrl_stalld` | ID stall | [1061](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1061) |
-| `take_pc_mem` / `take_pc_wb` | MEM/WB redirect | [636](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L636)/[770](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L770) |
-| `ex_rs(0/1)` | EX operands after bypass | [475](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L475) |
-| `id_load_use` | load-use hazard | [1031](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1031) |
-| `sboard` / `wb_set_sboard` | long-latency scoreboard | [1007](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1007)/[764](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L764) |
-| `ll_arb` / `ll_wen` | long-latency writeback arbitration | [784](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L784)/[789](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L789) |
-| `rf_wen/waddr/wdata` | RegFile write | [823-826](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L823-L826) |
+| `id_ctrl` / `ex_ctrl` / `mem_ctrl` / `wb_ctrl` | per-stage control bundles | [248-250](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L248-L250) |
+| `ctrl_killd/killx/killm` | per-stage kill | [1076](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1076)/[609](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L609)/[707](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L707) |
+| `ctrl_stalld` | ID stall | [1061](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1061) |
+| `take_pc_mem` / `take_pc_wb` | MEM/WB redirect | [636](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L636)/[770](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L770) |
+| `ex_rs(0/1)` | EX operands after bypass | [475](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L475) |
+| `id_load_use` | load-use hazard | [1031](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1031) |
+| `sboard` / `wb_set_sboard` | long-latency scoreboard | [1007](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1007)/[764](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L764) |
+| `ll_arb` / `ll_wen` | long-latency writeback arbitration | [784](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L784)/[789](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L789) |
+| `rf_wen/waddr/wdata` | RegFile write | [823-826](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L823-L826) |
 
 ## Appendix B. Referenced files
 
 | File | Role |
 |---|---|
-| [`RocketCore.scala`](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala) | the basis of this document; the ID~WB pipeline |
-| [`IDecode.scala`](generators/rocket-chip/src/main/scala/rocket/IDecode.scala) | the `IntCtrlSigs` definition and the decode table |
-| [`Instructions.scala`](generators/rocket-chip/src/main/scala/rocket/Instructions.scala) | opcode constants |
-| [`Consts.scala`](generators/rocket-chip/src/main/scala/rocket/Consts.scala) | the `M_*` (mem_cmd), `A1_*`/`A2_*`, and `IMM_*` constants |
-| [`ALU.scala`](generators/rocket-chip/src/main/scala/rocket/ALU.scala) | the `FN_*` constants and the ALU implementation |
-| [`Frontend.scala`](generators/rocket-chip/src/main/scala/rocket/Frontend.scala) / [`IBuf.scala`](generators/rocket-chip/src/main/scala/rocket/IBuf.scala) | the IF stage and the instruction buffer (outside the core boundary) |
-| [`BTB.scala`](generators/rocket-chip/src/main/scala/rocket/BTB.scala) | the BTB/BHT/RAS predictors (outside the core boundary) |
-| [`HellaCache.scala`](generators/rocket-chip/src/main/scala/rocket/HellaCache.scala) / [`DCache.scala`](generators/rocket-chip/src/main/scala/rocket/DCache.scala) / [`NBDcache.scala`](generators/rocket-chip/src/main/scala/rocket/NBDcache.scala) | the D$ interface, DCache, and NonBlockingCache (the peer block of `io.dmem`) |
+| [`RocketCore.scala`](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala) | the basis of this document; the ID~WB pipeline |
+| [`IDecode.scala`](../generators/rocket-chip/src/main/scala/rocket/IDecode.scala) | the `IntCtrlSigs` definition and the decode table |
+| [`Instructions.scala`](../generators/rocket-chip/src/main/scala/rocket/Instructions.scala) | opcode constants |
+| [`Consts.scala`](../generators/rocket-chip/src/main/scala/rocket/Consts.scala) | the `M_*` (mem_cmd), `A1_*`/`A2_*`, and `IMM_*` constants |
+| [`ALU.scala`](../generators/rocket-chip/src/main/scala/rocket/ALU.scala) | the `FN_*` constants and the ALU implementation |
+| [`Frontend.scala`](../generators/rocket-chip/src/main/scala/rocket/Frontend.scala) / [`IBuf.scala`](../generators/rocket-chip/src/main/scala/rocket/IBuf.scala) | the IF stage and the instruction buffer (outside the core boundary) |
+| [`BTB.scala`](../generators/rocket-chip/src/main/scala/rocket/BTB.scala) | the BTB/BHT/RAS predictors (outside the core boundary) |
+| [`HellaCache.scala`](../generators/rocket-chip/src/main/scala/rocket/HellaCache.scala) / [`DCache.scala`](../generators/rocket-chip/src/main/scala/rocket/DCache.scala) / [`NBDcache.scala`](../generators/rocket-chip/src/main/scala/rocket/NBDcache.scala) | the D$ interface, DCache, and NonBlockingCache (the peer block of `io.dmem`) |
 
 ## Appendix C. Glossary
 
