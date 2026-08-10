@@ -1,11 +1,11 @@
 # Rocket Core Execution Trace by Instruction Type (Doc B)
 
 > **Where this document sits**
-> This document assumes the **common pipeline skeleton and vocabulary** defined in [Doc A — Pipeline Overview](Rocket_pipeline_overview.md),
+> This document assumes the **common pipeline skeleton and vocabulary** defined in [Doc A — Pipeline Overview](Rocket_pipeline_doc_a_overview.md),
 > and traces the **differences (diffs)** between instruction types. Shared behavior is not repeated; it is **linked by Doc A section number (§)**.
-> Reference source: [`RocketCore.scala`](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala), with decoding in [`IDecode.scala`](generators/rocket-chip/src/main/scala/rocket/IDecode.scala).
+> Reference source: [`RocketCore.scala`](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala), with decoding in [`IDecode.scala`](../generators/rocket-chip/src/main/scala/rocket/IDecode.scala).
 > Reference source revision: the same as Doc A §0 — rocket-chip `55bcad0f5` (`v1.6-819-g55bcad0f5`); line numbers are valid for that snapshot.
-> Reference configuration: the same as [Doc A §5](Rocket_pipeline_overview.md#5-configuration-parameters-rocketcoreparams) — **RV64GC with virtual memory (`useVM`), plus `pipelinedMul`**.
+> Reference configuration: the same as [Doc A §5](Rocket_pipeline_doc_a_overview.md#5-configuration-parameters-rocketcoreparams) — **RV64GC with virtual memory (`useVM`), plus `pipelinedMul`**.
 > Everything there but `pipelinedMul` is a plain `RocketCoreParams` default; **`pipelinedMul` is not a default** (it requires `mulUnroll == xLen`, which no stock config sets), which is why §3.4 describes both the pipelined and the non-pipelined multiplier.
 > Chapter order: **ALU → Load/Store → Mul/Div → Branch (+JAL/JALR) → FP**, with a signal matrix in the appendix.
 
@@ -20,7 +20,7 @@
 
 ### How to read a decode row (`IDecode.scala`)
 
-Each row of the decode table fills an `IntCtrlSigs` with the fields in this order ([IDecode.scala:63-65](generators/rocket-chip/src/main/scala/rocket/IDecode.scala#L63-L65)):
+Each row of the decode table fills an `IntCtrlSigs` with the fields in this order ([IDecode.scala:63-65](../generators/rocket-chip/src/main/scala/rocket/IDecode.scala#L63-L65)):
 
 ```
 legal, fp, rocc, branch, jal, jalr, rxs2, rxs1, | sel_alu2, sel_alu1, sel_imm, alu_dw, alu_fn, | mem, mem_cmd, | rfs1,rfs2,rfs3, wfd, mul, div, wxd, csr, fence_i, fence, amo, dp
@@ -43,7 +43,7 @@ ADD   legal=Y ... rxs2=Y rxs1=Y | A2_RS2, A1_RS1, IMM_X, DW_XPR, FN_ADD | mem=N 
 SLL   legal=Y ... rxs2=Y rxs1=Y | A2_RS2, A1_RS1, IMM_X, DW_XPR, FN_SL  | mem=N | wxd=Y  (shift)
 ```
 
-- Distinguishing signals: `wxd=Y` with `mem/branch/jal/jalr/mul/div/fp=N` and `csr=N` → this matches the "pure arithmetic" derived expression in Doc A ([RocketCore.scala:185](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L185)).
+- Distinguishing signals: `wxd=Y` with `mem/branch/jal/jalr/mul/div/fp=N` and `csr=N` → this matches the "pure arithmetic" derived expression in Doc A ([RocketCore.scala:185](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L185)).
 - **The only difference between ADD and ADDI is `sel_alu2`**: `A2_RS2` (register) versus `A2_IMM` (immediate). Every other path is identical.
 - **Shifts and logic/set operations (SLL/SRL/SRA, AND/OR/XOR, SLT, …) share the skeleton of ADD and differ only in `alu_fn`** (`FN_SL/FN_SR/FN_SRA/FN_AND/…`). Note, however, that the path *inside* the ALU that produces the result in EX is different (§1.2 EX — `shift_logic_cond` rather than `adder_out`).
 
@@ -106,8 +106,8 @@ decode·rf.read  op1/op2 → ALU → out    (pass-through)     RF.write
   - `FN_SL` (SLL) / `FN_SR` (SRL) / `FN_SRA` (SRA) → the shift result `shout` → `shift_logic_cond`
   - `FN_AND/FN_OR/FN_XOR` → `logic` → `shift_logic_cond`
   - `FN_SLT/FN_SLTU` → compare-set (`slt`) → `shift_logic_cond`
-- `shamt` is taken from `in2(5,0)` (RV64), and SLL reverses its input so that it can share the right shifter (`shout_l = Reverse(shout_r)`, [ALU.scala:108-112](generators/rocket-chip/src/main/scala/rocket/ALU.scala#L108-L112)).
-- With `alu_dw=DW_32` (the W instructions such as ADDW/SLLW), the lower 32 bits of the result are sign-extended ([ALU.scala:180](generators/rocket-chip/src/main/scala/rocket/ALU.scala#L180)).
+- `shamt` is taken from `in2(5,0)` (RV64), and SLL reverses its input so that it can share the right shifter (`shout_l = Reverse(shout_r)`, [ALU.scala:108-112](../generators/rocket-chip/src/main/scala/rocket/ALU.scala#L108-L112)).
+- With `alu_dw=DW_32` (the W instructions such as ADDW/SLLW), the lower 32 bits of the result are sign-extended ([ALU.scala:180](../generators/rocket-chip/src/main/scala/rocket/ALU.scala#L180)).
 
 **MEM** — **no memory access.** The EX result is simply passed down the pipeline (→ Doc A §7.3 ①). Because `mem_ctrl.mem=N`, `io.dmem.req.valid=0`.
 
@@ -277,7 +277,7 @@ Load data reaches the RegFile **directly from the D$ response (`io.dmem.resp`)**
 | WB (s2) | `resp`, `s2_nack`, `s2_xcpt` | D$→core | data, replay, fault |
 | late | `resp.replay` (miss completion) | D$→core | out-of-order writeback |
 
-→ The D$ internals (TLB, MSHRs, replay queue) are implemented in [`HellaCache.scala`](generators/rocket-chip/src/main/scala/rocket/HellaCache.scala) and [`DCache.scala`](generators/rocket-chip/src/main/scala/rocket/DCache.scala).
+→ The D$ internals (TLB, MSHRs, replay queue) are implemented in [`HellaCache.scala`](../generators/rocket-chip/src/main/scala/rocket/HellaCache.scala) and [`DCache.scala`](../generators/rocket-chip/src/main/scala/rocket/DCache.scala).
 
 ---
 
@@ -293,7 +293,7 @@ MUL  legal=Y ... rxs2=Y rxs1=Y | A2_RS2, A1_RS1, FN_MUL | mem=N | mul=M div=D wx
 DIV  legal=Y ... rxs2=Y rxs1=Y | A2_RS2, A1_RS1, FN_DIV | mem=N | div=Y wxd=Y
 ```
 
-- **`alu_fn` is reused** as the routing selector for the unit: `FN_MUL=FN_ADD`, `FN_MULH=FN_SL`, `FN_DIV=FN_XOR`, `FN_REM=FN_OR`, … ([ALU.scala:47-55](generators/rocket-chip/src/main/scala/rocket/ALU.scala#L47-L55)).
+- **`alu_fn` is reused** as the routing selector for the unit: `FN_MUL=FN_ADD`, `FN_MULH=FN_SL`, `FN_DIV=FN_XOR`, `FN_REM=FN_OR`, … ([ALU.scala:47-55](../generators/rocket-chip/src/main/scala/rocket/ALU.scala#L47-L55)).
 - MUL sets both the `mul` and `div` flags — with `pipelinedMul` it is handled by the pipelined multiplier, otherwise by the `div` unit (MulDiv) (§3.4).
 
 **Pipeline path:**
@@ -362,7 +362,7 @@ rf.read         div/mul.req          ┌ mul fixed latency ╌▶ wb_ctrl.mul �
 
 ### 3.5 External interaction
 
-These are **core-internal modules** ([`Multiplier.scala`](generators/rocket-chip/src/main/scala/rocket/Multiplier.scala)) and never leave the core IO. The nature of the interaction is "variable latency plus out-of-order completion", which shares the **same scoreboard/`ll_arb` mechanism** as a load miss (hence the placement right after Load/Store).
+These are **core-internal modules** ([`Multiplier.scala`](../generators/rocket-chip/src/main/scala/rocket/Multiplier.scala)) and never leave the core IO. The nature of the interaction is "variable latency plus out-of-order completion", which shares the **same scoreboard/`ll_arb` mechanism** as a load miss (hence the placement right after Load/Store).
 
 ---
 
@@ -431,7 +431,7 @@ BNE  ...FN_SNE   BLT ...FN_SLT   BLTU ...FN_SLTU  (SGE/SGEU use fn rather than s
 1118  io.imem.bht_update.bits.branch     := mem_ctrl.branch
 ```
 
-→ The internal structure of the BHT/BTB is in [`BTB.scala`](generators/rocket-chip/src/main/scala/rocket/BTB.scala) (outside the core).
+→ The internal structure of the BHT/BTB is in [`BTB.scala`](../generators/rocket-chip/src/main/scala/rocket/BTB.scala) (outside the core).
 
 ### 4.2 JAL — diff (unconditional jump)
 
@@ -440,7 +440,7 @@ BNE  ...FN_SNE   BLT ...FN_SLT   BLTU ...FN_SLTU  (SGE/SGEU use fn rather than s
 JAL  jal=Y | A2_SIZE, A1_PC, IMM_UJ, FN_ADD | mem=N | wxd=Y
 ```
 
-- Because it is **unconditional**, there is no condition comparison (`branch=N`). The target is computed in MEM from `IMM_UJ` ([RocketCore.scala:624](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L624)).
+- Because it is **unconditional**, there is no condition comparison (`branch=N`). The target is computed in MEM from `IMM_UJ` ([RocketCore.scala:624](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L624)).
 - **ID — the destination (rd) holds the link (PC+4), not the target:** JAL has `wxd=Y` and writes the **return address PC+4** to rd. Contrary to a common misconception, rd does not receive the *target* — it receives the **link**; the target goes to the next PC (`mem_npc`), not to rd. The rd address is decoded in ID as `id_waddr`, and extracted from `inst(11,7)` in the later stages. If that rd is x1/x5 (a link register), the predictor is hinted with **call** (see `CFIType` below).
 
 ```scala
@@ -504,8 +504,8 @@ JALR  jalr=Y rxs1=Y | A2_IMM, A1_RS1, IMM_I, FN_ADD | mem=N | wxd=Y
 
 > **JAL versus JALR in brief**: for JAL the ALU computes the *link (PC+4)* and the target comes from `mem_br_target`; for JALR the ALU computes the *target (rs1+imm)* and the link comes from `mem_br_target`. The roles are swapped, and the `mem_int_wdata` mux sorts it out.
 
-- **RAS**: when a JALR is a return (rs1 = x1/x5) the core only sends the `CFIType.ret` hint ([:1105](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1105)). The actual RAS push/pop is **not done by the core** — `io.imem.ras_update := DontCare` ([:1121-1122](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1121-L1122)); it is handled by the Frontend and `BTB.scala` (Doc A §3, §11.3).
-- JALR cannot be bypassed (`ex_ctrl.jalr` is one of the `ex_cannot_bypass` terms, [:1018](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1018)) → the pipeline stalls where necessary to settle rs1.
+- **RAS**: when a JALR is a return (rs1 = x1/x5) the core only sends the `CFIType.ret` hint ([:1105](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1105)). The actual RAS push/pop is **not done by the core** — `io.imem.ras_update := DontCare` ([:1121-1122](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1121-L1122)); it is handled by the Frontend and `BTB.scala` (Doc A §3, §11.3).
+- JALR cannot be bypassed (`ex_ctrl.jalr` is one of the `ex_cannot_bypass` terms, [:1018](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1018)) → the pipeline stalls where necessary to settle rs1.
 
 ### 4.4 Summary of external interaction
 
@@ -531,7 +531,7 @@ FLW  fp=Y rxs1=Y | A2_IMM, A1_RS1, IMM_I, FN_ADD | mem=Y, M_XRD | wfd=Y wxd=N
 ```
 
 - Distinguishing signal: **`fp=Y`**. The floating-point destination is `wfd` (write FP dest) and the sources are `rfs1/2/3`. An integer register write (`wxd`) occurs only for int↔fp move instructions.
-- The FP side also decodes in parallel: `io.fpu.dec.*` (ldst/wen/fma/…) drives the finer distinctions ([RocketCore.scala:193-199](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L193-L199)).
+- The FP side also decodes in parallel: `io.fpu.dec.*` (ldst/wen/fma/…) drives the finer distinctions ([RocketCore.scala:193-199](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L193-L199)).
 
 **Pipeline path (parallel to the integer pipeline):**
 
@@ -592,7 +592,7 @@ FP load/store:  reuses the §2 path (tag fp=1) ╌▶ ll_resp           hazards:
 ### 5.3 FP load/store
 
 FP loads and stores **reuse the integer Load/Store path (§2)**, with the destination in the FP register file:
-- The D$ request tag carries `ex_ctrl.fp` to distinguish them ([:1161](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1161)).
+- The D$ request tag carries `ex_ctrl.fp` to distinguish them ([:1161](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1161)).
 - On the response, `dmem_resp_fpu` (tag bit 0) routes the data to the FPU's long-latency response port:
 
 ```scala
@@ -602,7 +602,7 @@ FP loads and stores **reuse the integer Load/Store path (§2)**, with the destin
 1132  io.fpu.ll_resp_tag  := dmem_resp_waddr
 ```
 
-- Store data enters s1_data from `io.fpu.store_data` ([:1178](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1178)).
+- Store data enters s1_data from `io.fpu.store_data` ([:1178](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L1178)).
 
 ### 5.4 Summary of external interaction
 
@@ -655,9 +655,9 @@ A summary of how the main control signals are set per type. (`Y` = 1, `-` = 0/do
 
 ## Appendix C. References
 
-- Shared skeleton and vocabulary: [Doc A — Pipeline Overview](Rocket_pipeline_overview.md) (§1~§14)
-- Code: [`RocketCore.scala`](generators/rocket-chip/src/main/scala/rocket/RocketCore.scala), [`IDecode.scala`](generators/rocket-chip/src/main/scala/rocket/IDecode.scala), [`ALU.scala`](generators/rocket-chip/src/main/scala/rocket/ALU.scala), [`Multiplier.scala`](generators/rocket-chip/src/main/scala/rocket/Multiplier.scala)
-- External blocks: [`Frontend.scala`](generators/rocket-chip/src/main/scala/rocket/Frontend.scala) and [`BTB.scala`](generators/rocket-chip/src/main/scala/rocket/BTB.scala) (prediction), [`HellaCache.scala`](generators/rocket-chip/src/main/scala/rocket/HellaCache.scala) and [`DCache.scala`](generators/rocket-chip/src/main/scala/rocket/DCache.scala) (D$)
+- Shared skeleton and vocabulary: [Doc A — Pipeline Overview](Rocket_pipeline_doc_a_overview.md) (§1~§14)
+- Code: [`RocketCore.scala`](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala), [`IDecode.scala`](../generators/rocket-chip/src/main/scala/rocket/IDecode.scala), [`ALU.scala`](../generators/rocket-chip/src/main/scala/rocket/ALU.scala), [`Multiplier.scala`](../generators/rocket-chip/src/main/scala/rocket/Multiplier.scala)
+- External blocks: [`Frontend.scala`](../generators/rocket-chip/src/main/scala/rocket/Frontend.scala) and [`BTB.scala`](../generators/rocket-chip/src/main/scala/rocket/BTB.scala) (prediction), [`HellaCache.scala`](../generators/rocket-chip/src/main/scala/rocket/HellaCache.scala) and [`DCache.scala`](../generators/rocket-chip/src/main/scala/rocket/DCache.scala) (D$)
 
 ---
 
