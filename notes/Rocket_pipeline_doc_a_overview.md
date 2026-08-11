@@ -670,16 +670,17 @@ Ordinary instructions write the RegFile in order at WB, but instructions **whose
 
 ### 12.1 The long-latency writeback path (`ll_arb`)
 
-The single RegFile write port is shared by four claimants, resolved in **three tiers**:
+The single RegFile write port is claimed by three groups — the **D$ load replay**, the **instruction in WB**, and the **`ll_arb` winner** (div / rocc / vec). There is no single priority cascade; **two independent mechanisms** resolve them:
 
-| Tier | Claimant | How it wins |
+| Conflict | Resolved by | Outcome |
 |---|---|---|
-| **1** | D$ load replay | overrides the arbiter outright — forces `ll_wen`/`ll_waddr` and pulls `ll_arb.io.out.ready` low ([:817-821](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L817-L821)) |
-| **2** | the instruction in WB | `ll_arb.io.out.ready := !wb_wxd` ([:790](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L790)) — the arbiter cannot fire while WB writes |
-| **3** | div / rocc / vec | `Arbiter(new LLWB, 3)` ([:784-813](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L784-L813)) — Chisel's **fixed-priority** arbiter, lowest input index first, so **div > rocc > vec** |
+| {D$, WB} vs `ll_arb` | one wire — `ll_arb.io.out.ready := !wb_wxd` ([:790](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L790)), forced low again on a D$ replay ([:818](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L818)) | the arbiter cannot fire |
+| D$ vs WB | `ll_wen := true.B` ([:820](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L820)) + `rf_waddr = Mux(ll_wen, …)` ([:826](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L826)) | **D$ wins** — but see below |
+| div vs rocc vs vec | `Arbiter(new LLWB, 3)` ([:784-813](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L784-L813)) — Chisel's **fixed-priority** arbiter, lowest input index first | **div > rocc > vec** |
 
-- The D$ replay is **not an arbiter input**; it intercepts the arbiter's output.
-- Tiers 1 and 2 would collide — a forced `ll_wen` steals `rf_waddr` and the WB write would be lost. The collision is **prevented a cycle earlier** rather than resolved here: `dcache_kill_mem = mem_reg_valid && mem_ctrl.wxd && io.dmem.replay_next` ([:702](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L702)) kills MEM as soon as `replay_next` announces the response, so no WB write is pending. The source names it exactly that — `// structural hazard on writeback port`.
+- The two drivers of `ll_arb.io.out.ready` are **not two levels of a cascade** — they are two assignments to the same wire, and both say the same thing: "the arbiter must not fire this cycle."
+- The D$ replay is **not an arbiter input**; it intercepts the output. Pulling `out.ready` low ([:818](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L818)) is not *how* it wins — it wins through `ll_wen`/`rf_waddr` — but it is required, or `out.fire` would dequeue the arbiter's winner and silently drop it (`div.io.resp.ready := ll_arb.io.in(0).ready`, [:792](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L792)).
+- Row 2's conflict is **prevented a cycle earlier** rather than resolved at the mux: a forced `ll_wen` steals `rf_waddr` and the WB write would be lost, so `dcache_kill_mem = mem_reg_valid && mem_ctrl.wxd && io.dmem.replay_next` ([:702](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L702)) kills MEM as soon as `replay_next` announces the response, leaving no WB write pending. The source names it exactly that — `// structural hazard on writeback port`.
 - The final RegFile write mux: `rf_wen = wb_wen || ll_wen`, with `rf_waddr`/`rf_wdata` ([:823-832](../generators/rocket-chip/src/main/scala/rocket/RocketCore.scala#L823-L832)) → §7.4 ③.
 
 ### 12.2 The scoreboard (tracking long-latency destinations)
