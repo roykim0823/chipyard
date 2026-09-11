@@ -61,16 +61,17 @@ source /home/vscode/chipyard/env.sh
 cd /home/vscode/chipyard/sims/verilator
 ```
 
-That sets `RISCV` to the toolchain prefix, which is where the prebuilt test binaries live:
+That sets `RISCV` to the toolchain prefix. Three paths are worth committing to memory — every
+command in this note spells them out in full rather than hiding them behind a shell variable:
 
-```bash
-ISA=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa           # ISA assembly tests
-BM=$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks     # benchmarks
-OUT=output/chipyard.harness.TestHarness.RocketConfig           # where results land
-```
+| What | Path |
+|---|---|
+| ISA assembly tests | `$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/` |
+| Benchmarks | `$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks/` |
+| Run artifacts | `output/chipyard.harness.TestHarness.<CONFIG>/` (relative to `sims/verilator/`) |
 
 The tests are already compiled — they were built by `build-setup.sh`, there is no separate
-build step (Appendix C).
+build step. Why they sit under `riscv64-unknown-elf` and not `riscv64-unknown-linux-gnu`: Appendix C.
 
 ## 1.2 Build the simulator
 
@@ -96,17 +97,17 @@ executable with a `-debug` suffix, built into its own tree, and far slower to ru
 Two ways, both useful.
 
 **(a) Through `make`** — the normal way. It rebuilds the simulator if stale, adds the standard
-plusargs, and files the output under `$OUT/`:
+plusargs, and files the output under `output/chipyard.harness.TestHarness.RocketConfig/`:
 
 ```bash
-make run-binary CONFIG=RocketConfig BINARY=$ISA/rv64ui-p-add      # ✅
+make run-binary CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add      # ✅
 ```
 
 **(b) By running the simulator executable yourself** — it is an ordinary program that takes an
 ELF as its argument:
 
 ```bash
-./simulator-chipyard.harness-RocketConfig $ISA/rv64ui-p-simple    # ✅
+./simulator-chipyard.harness-RocketConfig $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-simple    # ✅
 ```
 
 which prints:
@@ -121,7 +122,7 @@ invocation prints no verdict at all. Add `+verbose` to get one (it goes to **std
 
 ```bash
 ./simulator-chipyard.harness-RocketConfig +permissive +verbose +permissive-off \
-  $ISA/rv64ui-p-simple 2>&1 >/dev/null | spike-dasm | tail -1
+  $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-simple 2>&1 >/dev/null | spike-dasm | tail -1
 # ✅ → *** PASSED *** Completed after                30696 simulation cycles
 ```
 
@@ -139,11 +140,11 @@ run — Appendix D.1 compares them, Appendix E is the full manual.
 | **debug** | `make run-binary-debug` | `-debug` | ● `.out` | ● `.vcd`/`.fst` |
 
 ```bash
-make run-binary       CONFIG=RocketConfig BINARY=$ISA/rv64ui-p-add     # ✅ default
-make run-binary-fast  CONFIG=RocketConfig BINARY=$ISA/rv64ui-p-add     # ✅ fast
-make run-binary-debug CONFIG=RocketConfig BINARY=$ISA/rv64ui-p-add     # ✅ needs `make debug` first
+make run-binary       CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add     # ✅ default
+make run-binary-fast  CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add     # ✅ fast
+make run-binary-debug CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add     # ✅ needs `make debug` first
 
-make run-binary       CONFIG=RocketConfig BINARY=$BM/dhrystone.riscv   # benchmarks: same surface
+make run-binary       CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks/dhrystone.riscv   # benchmarks: same surface
 make run-binary       CONFIG=RocketConfig BINARY=../../tests/hello.riscv   # custom test (Appendix C.4)
 ```
 
@@ -190,7 +191,7 @@ don't work here are in Appendix D.3.
 - The list is generated **per config** — only extensions the target actually implements are
   included, so unsupported tests never run and never produce false failures (Appendix C.5).
 - Passed tests leave a `.run` marker and are **skipped on re-run**, so an interrupted sweep
-  resumes where it stopped. To force a full re-run: `rm -f $OUT/*.run`.
+  resumes where it stopped. To force a full re-run: `rm -f output/chipyard.harness.TestHarness.RocketConfig/*.run`.
 
 ✅ Measured here on 16 cores: the full ISA suite is **335 tests, 96 min 47 s wall, ~8.3×
 speedup** from `-j16`, zero failures. The 157 `-v-` (virtual memory) tests are the slow tail, and
@@ -201,9 +202,9 @@ the sweep saturates the CPU — don't run anything you care about timing alongsi
 ## 1.6 Did it pass?
 
 ```bash
-ls $OUT/*.run | wc -l              # tests passed so far (-fast runs leave a marker per pass)
-grep -l 'FAILED' $OUT/*.out        # which tests failed — empty output means none
-tail -1 $OUT/rv64ui-p-add.out      # the verdict for one test
+ls output/chipyard.harness.TestHarness.RocketConfig/*.run | wc -l              # tests passed so far (-fast runs leave a marker per pass)
+grep -l 'FAILED' output/chipyard.harness.TestHarness.RocketConfig/*.out        # which tests failed — empty output means none
+tail -1 output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.out      # the verdict for one test
 ```
 
 The `.run` marker is the most reliable signal: the rule only `touch`es it on a zero exit.
@@ -270,18 +271,18 @@ test name verbatim. For extensionless ISA tests the two agree; for benchmarks th
 
 | Run | Artifacts |
 |---|---|
-| `make run-binary BINARY=$BM/memcpy.riscv` | `memcpy.log`, `memcpy.out` |
+| `make run-binary BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks/memcpy.riscv` | `memcpy.log`, `memcpy.out` |
 | `make run-bmark-tests` (suite) | `median.riscv`, `median.riscv.log`, `median.riscv.run` |
 
-So after a single-binary benchmark run `tail -1 $OUT/memcpy.riscv.out` finds nothing — the file is
-`memcpy.out`.
+So after a single-binary benchmark run, `tail -1 output/chipyard.harness.TestHarness.RocketConfig/memcpy.riscv.out`
+finds nothing — the file is `memcpy.out`.
 
 ### What one run leaves behind ✅
 
 Measured with `run-binary` on a benchmark no suite had touched, so the directory started empty:
 
 ```bash
-make run-binary CONFIG=RocketConfig BINARY=$BM/memcpy.riscv
+make run-binary CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks/memcpy.riscv
 ```
 
 ```
@@ -342,18 +343,18 @@ C0:  21 [1] pc=[0000000000010008] W[r 0=0000000000000000][1] R[r10=0000000000010
 The trace begins after DRAMSim2 model-loading banners (also stderr), so filter it:
 
 ```bash
-grep -a '^C0:' $OUT/rv64ui-p-add.out | less
+grep -a '^C0:' output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.out | less
 ```
 
 ## 2.4 Waveforms
 
 ```bash
 make CONFIG=RocketConfig debug                                  # build once
-make run-binary-debug CONFIG=RocketConfig BINARY=$ISA/rv64ui-p-add
+make run-binary-debug CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add
 make run-binary-debug CONFIG=RocketConfig BINARY=... USE_FST=1  # .fst instead of .vcd
 make run-binary-debug CONFIG=RocketConfig BINARY=... EXTRA_SIM_FLAGS="+dump-start=100000"
 
-gtkwave $OUT/rv64ui-p-add.vcd                                   # or: surfer
+gtkwave output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.vcd                                   # or: surfer
 ```
 
 | Simulator | Format | Viewer |
@@ -373,6 +374,46 @@ make NUMACTL=1                                 # pin to one socket
 ```
 
 Upstream recommends using the last two one at a time.
+
+### Where the wall time actually goes ✅
+
+Every runtime in these notes follows one rule:
+
+```
+wall time  ≈  harness cycles  ÷  simulation rate
+```
+
+and **the simulation rate is near-constant for a given `CONFIG`**. Measured on
+`MINV128D64RocketConfig` (Saturn), four benchmarks spanning 15× in size:
+
+| Benchmark | Harness cycles | `mcycle` (ROI) | ROI share | Wall | **Rate** |
+|---|---:|---:|---:|---:|---:|
+| `vec-strcmp` | 23 396 | 1 135 | 4.9% | 2.9 s | 8 180 cyc/s |
+| `vec-daxpy` | 78 016 | 3 907 | 5.0% | 10 s | 7 801 cyc/s |
+| `vec-memcpy` | 110 496 | 5 084 | 4.6% | 13 s | 8 499 cyc/s |
+| `vec-sgemm` | 358 946 | 73 111 | 20.4% | 43 s | 8 347 cyc/s |
+
+The rate varies by <9% while the workload varies by 15×. **So every wall-time difference you see
+is a cycle-count difference, not the simulator speeding up or slowing down.** Three things move
+the cycle count, in descending order of impact:
+
+1. **The serial TSI load.** Without `+loadmem`/`LOADMEM=1` the binary arrives one word at a time.
+   ✅ Same `vec-strcmp`: 392 186 cycles bare vs 23 396 preloaded — **94% of the bare run is the
+   load**. This dominates whenever the kernel is small, which is most of the time.
+2. **The workload itself** — `vec-strcmp` 23 k cycles to `vec-sgemm` 359 k.
+3. **The memory model.** `+dramsim` swaps in DRAMSim2 timing and shifts counts a few percent
+   (Appendix E.2).
+
+⚠️ **`mcycle` is not the simulation cost.** riscv-tests benchmarks bracket their kernel with
+`setStats()`, so the `mcycle` they print over UART is the *region of interest only* — **5% of the
+simulated cycles** for three of the four above. Boot, data setup, result verification and `printf`
+are all simulated but excluded from it. Budget from harness cycles (the
+`*** PASSED *** Completed after N` line, which needs `+verbose`), not from `mcycle`.
+
+The rate does change **between configs**, because a bigger design costs more per cycle: ✅
+`LeanGemminiRocketConfig` runs at ~5 550 cyc/s against Saturn `MINV128D64`'s ~8 300, a 16×16 PE
+array being the difference. Within one config, though, it holds — which is what makes
+"cycles ÷ rate" a usable estimator once you have measured the rate once.
 
 ### `LOADMEM=1` matters far more than the docs suggest ✅
 
@@ -570,6 +611,31 @@ switch layout to *hierarchical*.
 
 # Appendix C — Test binaries reference
 
+## Why the paths look like that — the two toolchain sysroots ✅
+
+`$RISCV` holds **two** cross toolchains, one per GCC *target triple*, and each keeps its
+target-specific libraries and headers in its own sysroot directory named after that triple:
+
+| Sysroot | Toolchain | Contains | For |
+|---|---|---|---|
+| `$RISCV/riscv64-unknown-elf/` | `riscv64-unknown-elf-gcc` | **newlib** (`libc.a`, `libg.a`) + **libgloss** (`libgloss.a`, `libgloss_htif.a`), `crt0.o`, `htif.ld`, `htif*.specs` — all static `.a` | **bare metal**: no OS, no dynamic loader |
+| `$RISCV/riscv64-unknown-linux-gnu/` | `riscv64-unknown-linux-gnu-gcc` | shared objects (`libgcc_s.so`, `libatomic.so`, …) | **Linux userspace**: dynamically linked, real syscalls |
+
+`riscv-tests` are **bare-metal** programs — the harness boots them directly on a machine with no
+OS, and they report their verdict through **HTIF/`tohost`**, which is exactly what
+`libgloss_htif.a` and `htif.ld` in the `-elf` sysroot provide. So `make install` for riscv-tests
+lands in that sysroot's `share/`:
+
+```
+$RISCV/riscv64-unknown-elf/share/riscv-tests/{isa,benchmarks}/
+```
+
+✅ Note that `share/` exists **only** under the `-elf` triple — the Linux triple has no `share/`
+at all. The Linux toolchain matters when a workload needs an OS: Gemmini's `-linux` test binaries
+are built with it for FireSim, while its `-baremetal` binaries use the `-elf` one for Verilator
+(see [`Gemmini_Build_Test.md`](Gemmini_Build_Test.md) §1.4). Custom tests in `tests/` link against
+libgloss-htif for the same reason (C.4).
+
 ## C.1 Where `riscv-tests` comes from
 
 `$RISCV/riscv64-unknown-elf/share/riscv-tests/` is **not** shipped by conda — it is compiled
@@ -612,8 +678,8 @@ $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/
 Most tests are built both ways, so you can pick what to exercise by changing one letter:
 
 ```bash
-make run-binary CONFIG=RocketConfig BINARY=$ISA/rv64ui-p-add   # physical
-make run-binary CONFIG=RocketConfig BINARY=$ISA/rv64ui-v-add   # virtual — same test, plus MMU/traps
+make run-binary CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add   # physical
+make run-binary CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-v-add   # virtual — same test, plus MMU/traps
 ```
 
 `-v-` requires an MMU on the target. Privileged tests (`rv64mi-*`, `rv64si-*`) exist only as `-p-`.
@@ -695,7 +761,7 @@ config implements. Forcing one through `BINARY=` traps as an illegal instruction
 expected behaviour and not a core bug:
 
 ```bash
-make run-binary CONFIG=RocketConfig BINARY=$ISA/rv64uzbc-p-clmul
+make run-binary CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64uzbc-p-clmul
 # ✅ → *** FAILED *** (tohost = 668)      [RocketConfig has no Zbc]
 ```
 
@@ -799,30 +865,46 @@ code. **They exist only under `make`** — Appendix E.4 shows what reproducing o
 Way B from Appendix D.1, in full. The command lines below are transcribed from the Makefiles
 (line numbers cited) and spot-checked against `make -n` and live runs on 2026-09-10.
 
-```bash
-cd /home/vscode/chipyard/sims/verilator
-SIM=./simulator-chipyard.harness-RocketConfig
-DBG=./simulator-chipyard.harness-RocketConfig-debug
-DRAMSIM="+dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini"
-ISA=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa
-OUT=output/chipyard.harness.TestHarness.RocketConfig
-```
+All commands below run from `/home/vscode/chipyard/sims/verilator`, and the DRAMSim2 pair
+`+dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini` is written
+out every time — it is what `make` passes, and leaving it off changes your cycle counts (E.2).
 
 ## E.1 Argument order is not optional
 
 ```
-$SIM  +permissive  <RTL/harness plusargs>  +permissive-off  <ELF>  [target args]
+./simulator-chipyard.harness-RocketConfig  +permissive  <RTL/harness plusargs>  +permissive-off  <ELF>  [target args]
 ```
 
-fesvr parses the whole `argv` and throws
-`Unknown argument (did you mean to enable +permissive parsing?)` on anything it does not
-recognise. `+permissive` suppresses that check and `+permissive-off` restores it
-(`fesvr/htif.cc:365-368,411-419`), so every simulator-side plusarg must sit **between** the two
-and the ELF path must come **after** `+permissive-off`. Get it wrong and the failure mode is a
-confusing "could not open …" from fesvr, not a usage message.
+**Why the brackets exist.** The command line is read by two independent consumers in the one
+process: the **RTL side** (`TestDriver.v` via `$test$plusargs`, plus Verilator's own
+`+verilator+…`), which scans the whole argv order-independently and ignores what it doesn't know;
+and **fesvr**, which does a positional `getopt` parse whose only job is to locate the ELF.
 
-With **no** extra plusargs the brackets are unnecessary — `$SIM <ELF>` is a legal, complete
-command line ✅ (§1.3).
+fesvr is the picky one, and its rule is *not* "reject unknown arguments". It is
+(`fesvr/htif.cc:421-429`): **on the first argument I don't recognise, conclude the options are over
+and treat that token as the binary**, taking everything after it as target arguments.
+
+`+permissive` / `+permissive-off` toggle that behaviour by flipping getopt's `opterr` flag
+(`htif.cc:411-419`):
+
+| Marker | Meaning for fesvr |
+|---|---|
+| `+permissive` | `opterr = 0` — from here on, silently skip arguments you don't understand |
+| `+permissive-off` | `opterr = 1` — resume strict parsing; the **next** unrecognised token is the binary |
+
+So simulator-side plusargs go **between** the two, and the ELF path comes **after**
+`+permissive-off`. The RTL never looks at either marker — they exist purely for fesvr.
+
+**The three ways to get it wrong** ✅ (all reproduced here, log #24-26):
+
+| Mistake | What happens |
+|---|---|
+| no `+permissive` at all | `+verbose` is unrecognised, so strict fesvr takes **it** as the binary: `could not open +verbose; searched paths:`. The RTL still honours `+verbose` and prints a trace first — fesvr only parses on the first `tsi_tick`, once the design is already running |
+| `+permissive` without `+permissive-off` | strictness never returns, so the **ELF path itself** is skipped like any other unknown token: `No binary specified (Did you forget it? Did you forget '+permissive-off' if running with +permissive?)` |
+| an unknown `-`/`--` option | the only case that yields `Unknown argument (did you mean to enable +permissive parsing?)` — getopt rejects dash-options before the plusarg chain is reached |
+
+With **no** extra plusargs the brackets are unnecessary —
+`./simulator-chipyard.harness-RocketConfig <ELF>` is a legal, complete command line ✅ (§1.3).
 
 ## E.2 Plusargs
 
@@ -849,34 +931,44 @@ stdin. Drop it only if you mean to type at the target.
 **= `make run-binary`** (`common.mk:378-386`; ✅ expansion confirmed with `make -n`)
 
 ```bash
-mkdir -p $OUT
-$SIM +permissive $DRAMSIM +max-cycles=10000000 +verbose +permissive-off \
-  $ISA/rv64ui-p-add </dev/null \
-  2> >(spike-dasm > $OUT/rv64ui-p-add.out) | tee $OUT/rv64ui-p-add.log
+mkdir -p output/chipyard.harness.TestHarness.RocketConfig
+./simulator-chipyard.harness-RocketConfig +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +max-cycles=10000000 +verbose +permissive-off \
+  $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add </dev/null \
+  2> >(spike-dasm > output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.out) \
+  | tee output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.log
 ```
 
 **= `make run-binary-fast`** (`common.mk:392-399`) — drop `+verbose` and the stderr pipe
 
 ```bash
-$SIM +permissive $DRAMSIM +max-cycles=10000000 +permissive-off \
-  $ISA/rv64ui-p-add </dev/null | tee $OUT/rv64ui-p-add.log
+./simulator-chipyard.harness-RocketConfig +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +max-cycles=10000000 +permissive-off \
+  $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add </dev/null | tee output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.log
 ```
 
 **= `make run-binary-debug`** (`common.mk:407-419`) — debug executable, `+vcdfile`, plus the
 disassembly step the Makefile does for you ⏳
 
 ```bash
-riscv64-unknown-elf-objdump -D -S $ISA/rv64ui-p-add > $OUT/rv64ui-p-add.dump
-$DBG +permissive $DRAMSIM +max-cycles=10000000 +verbose \
-  +vcdfile=$OUT/rv64ui-p-add.vcd +permissive-off \
-  $ISA/rv64ui-p-add </dev/null \
-  2> >(spike-dasm > $OUT/rv64ui-p-add.out) | tee $OUT/rv64ui-p-add.log
+riscv64-unknown-elf-objdump -D -S $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add > output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.dump
+./simulator-chipyard.harness-RocketConfig-debug +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +max-cycles=10000000 +verbose \
+  +vcdfile=output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.vcd +permissive-off \
+  $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add </dev/null \
+  2> >(spike-dasm > output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.out) \
+  | tee output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.log
 ```
 
 **Just the verdict**, nothing written to disk ✅
 
 ```bash
-$SIM +permissive $DRAMSIM +verbose +permissive-off $ISA/rv64ui-p-simple \
+./simulator-chipyard.harness-RocketConfig +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +verbose +permissive-off $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-simple \
   2>&1 >/dev/null | spike-dasm | tail -1
 # → *** PASSED *** Completed after                31136 simulation cycles
 ```
@@ -884,8 +976,12 @@ $SIM +permissive $DRAMSIM +verbose +permissive-off $ISA/rv64ui-p-simple \
 And the reason Way B exists at all — a debugger or profiler around the run ⏳
 
 ```bash
-gdb --args $SIM +permissive $DRAMSIM +max-cycles=10000000 +permissive-off $ISA/rv64ui-p-add
-perf stat -- $SIM +permissive $DRAMSIM +max-cycles=10000000 +permissive-off $ISA/rv64ui-p-add
+gdb --args ./simulator-chipyard.harness-RocketConfig +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +max-cycles=10000000 +permissive-off $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add
+perf stat -- ./simulator-chipyard.harness-RocketConfig +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +max-cycles=10000000 +permissive-off $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add
 ```
 
 ## E.4 Can `run-asm-tests` be done with the simulator directly?
@@ -899,14 +995,16 @@ per-test verdicts and sets the exit code (`...RocketConfig.d:774`).
 You can reproduce the shape of it in shell ⏳:
 
 ```bash
-mkdir -p $OUT
-for t in $ISA/rv64ui-p-*; do
+mkdir -p output/chipyard.harness.TestHarness.RocketConfig
+for t in $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-*; do
   [ "${t%.dump}" = "$t" ] || continue          # skip the objdump listings
   n=$(basename "$t")
-  $SIM +permissive $DRAMSIM +max-cycles=10000000 +verbose +permissive-off "$t" \
-    </dev/null 2> >(spike-dasm > "$OUT/$n.out") > "$OUT/$n.log"
+  ./simulator-chipyard.harness-RocketConfig +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +max-cycles=10000000 +verbose +permissive-off "$t" \
+    </dev/null 2> >(spike-dasm > "output/chipyard.harness.TestHarness.RocketConfig/$n.out") > "output/chipyard.harness.TestHarness.RocketConfig/$n.log"
 done
-grep -l 'FAILED' $OUT/*.out          # non-empty = something broke
+grep -l 'FAILED' output/chipyard.harness.TestHarness.RocketConfig/*.out          # non-empty = something broke
 ```
 
 What that loop gives up:
@@ -921,8 +1019,8 @@ What that loop gives up:
 Two middle grounds keep the Makefile but let you pick the binaries ⏳:
 
 ```bash
-make run-binaries      CONFIG=RocketConfig BINARIES="$(ls $ISA/rv64ui-p-* | grep -v '\.dump$' | tr '\n' ' ')"
-make run-binaries-fast CONFIG=RocketConfig BINARIES="$(ls $ISA/rv64ui-p-* | grep -v '\.dump$' | tr '\n' ' ')"
+make run-binaries      CONFIG=RocketConfig BINARIES="$(ls $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-* | grep -v '\.dump$' | tr '\n' ' ')"
+make run-binaries-fast CONFIG=RocketConfig BINARIES="$(ls $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-* | grep -v '\.dump$' | tr '\n' ' ')"
 ```
 
 `BINARIES` is `$(wildcard)`-expanded (`common.mk:376`), so a literal list or a glob both work —
@@ -938,34 +1036,39 @@ Executed here on 2026-09-08, `CONFIG=RocketConfig`:
 
 | # | Command | Result |
 |---|---|---|
-| 1 | `make run-binary BINARY=$ISA/rv64ui-p-simple` | ✅ `*** PASSED ***`, 31136 cycles |
-| 2 | `make run-binary BINARY=$ISA/rv64ui-p-add` | ✅ PASSED, 99666 cycles; `.log` + `.out` only |
-| 3 | `make run-binary-fast BINARY=$ISA/rv64ui-p-add` | ✅ `.log` only |
+| 1 | `make run-binary BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-simple` | ✅ `*** PASSED ***`, 31136 cycles |
+| 2 | `make run-binary BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add` | ✅ PASSED, 99666 cycles; `.log` + `.out` only |
+| 3 | `make run-binary-fast BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add` | ✅ `.log` only |
 | 4 | `make CONFIG=RocketConfig debug` | ✅ built `simulator-...-RocketConfig-debug` (15 MB) |
-| 5 | `make run-binary-debug BINARY=$ISA/rv64ui-p-add` | ✅ `.dump` + `.log` + `.out` + 220 MB `.vcd` |
-| 6 | `make $OUT/rv64ui-p-add.run` (abs path) | ✅ symlink + `.log` + empty `.run` marker |
-| 7 | `make $OUT/median.riscv.run` (abs path) | ✅ symlink into `benchmarks/`, `mcycle = 6117`, `minstret = 4659` |
-| 8 | `make run-binary BINARY=$ISA/rv64uzbc-p-clmul` | ✅ `*** FAILED *** (tohost = 668)`, exit 2 |
+| 5 | `make run-binary-debug BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add` | ✅ `.dump` + `.log` + `.out` + 220 MB `.vcd` |
+| 6 | `make output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.run` (abs path) | ✅ symlink + `.log` + empty `.run` marker |
+| 7 | `make output/chipyard.harness.TestHarness.RocketConfig/median.riscv.run` (abs path) | ✅ symlink into `benchmarks/`, `mcycle = 6117`, `minstret = 4659` |
+| 8 | `make run-binary BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64uzbc-p-clmul` | ✅ `*** FAILED *** (tohost = 668)`, exit 2 |
 | 9 | `make -n run-tests` | ❌ `No rule to make target 'run-tests'` |
 | 10 | `make -n run-asm-tests-debug` | ❌ recipe shells out to `vcd2vpd` — not installed |
 | 11 | `make -n run-asm-tests-fst` | ✅ emits `-v<test>.fst` |
 | 12 | `make -n run-bmark-tests-fast` | ✅ 11 of 12 planned — incremental skip confirmed |
 | 13 | `make -n USE_FST=1 run-binary-debug` | ✅ flag becomes `+vcdfile=<test>.fst` |
 | 14 | `make -n run-rvi-bmark-tests-fast` | ❌ does not exist |
-| 15 | `run-binary BINARY=$ISA/rv64ui-p-add LOADMEM=1` on a Saturn config | ✅ 7436 cycles / 23 s vs 99666 cycles unloaded — TSI load is ~92% of cycles |
+| 15 | `run-binary BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add LOADMEM=1` on a Saturn config | ✅ 7436 cycles / 23 s vs 99666 cycles unloaded — TSI load is ~92% of cycles |
 | 16 | `make -j16 run-asm-tests-fast` — **the full ISA suite** | ✅ exit 0, **335/335 asm tests passed**, 336 markers incl. one benchmark. 96 min 47 s wall / 799 min 41 s CPU → **~8.3× parallel speedup** on 16 cores. Split: 178 `-p-`, 157 `-v-`. Zero failures |
 
 Added 2026-09-10, all `CONFIG=RocketConfig`:
 
 | # | Command | Result |
 |---|---|---|
-| 17 | `./simulator-…-RocketConfig $ISA/rv64ui-p-simple` (no plusargs at all) | ✅ runs; prints only the UART banner and `TestDriver.v:158: Verilog $finish`; exit 0. **No verdict without `+verbose`** |
+| 17 | `./simulator-…-RocketConfig $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-simple` (no plusargs at all) | ✅ runs; prints only the UART banner and `TestDriver.v:158: Verilog $finish`; exit 0. **No verdict without `+verbose`** |
 | 18 | same + `+permissive +verbose +permissive-off`, stderr through `spike-dasm` | ✅ full commit trace then `*** PASSED *** Completed after 30696 simulation cycles` |
 | 19 | #18 again, this time **with** `+dramsim` | ✅ `*** PASSED ***` at **31136** cycles — matches #1, so the cycle delta vs #18 is entirely the DRAM model |
-| 20 | `make -n $OUT/rv64ui-p-simple.out` vs `make -n run-binary` | ✅ the suite `%.out` rule carries **no `+verbose`**; `run-binary` does. Confirms the §2.2 ⚠️ |
+| 20 | `make -n output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-simple.out` vs `make -n run-binary` | ✅ the suite `%.out` rule carries **no `+verbose`**; `run-binary` does. Confirms the §2.2 ⚠️ |
 | 21 | `make -n run-regression-tests-fast` | ✅ target exists, plans exactly **25** simulator runs |
-| 22 | `make run-binary BINARY=$BM/memcpy.riscv` into an empty output dir | ✅ PASSED, 1332136 cycles. Left **exactly two** files — `memcpy.log` (212 B) + `memcpy.out` (4.9 MB). No symlink, no `.run`, no `.dump`, no `.vcd` — confirms the §2.2 single-binary table |
+| 22 | `make run-binary BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks/memcpy.riscv` into an empty output dir | ✅ PASSED, 1332136 cycles. Left **exactly two** files — `memcpy.log` (212 B) + `memcpy.out` (4.9 MB). No symlink, no `.run`, no `.dump`, no `.vcd` — confirms the §2.2 single-binary table |
 | 23 | artifact naming, same run | ⚠️ artifacts are `memcpy.*`, **not** `memcpy.riscv.*` — `run-binary` strips the last extension via `get_out_name` (`variables.mk:304`). Suite targets do not: `median.riscv.log` / `.run` sit in the same directory |
+| 24 | `./simulator-chipyard.harness-RocketConfig +verbose <elf>` with **no** `+permissive` | ✅ RTL prints the commit trace, then fesvr aborts: `could not open +verbose` — it took the plusarg as the binary path |
+| 25 | `./simulator-chipyard.harness-RocketConfig +permissive +verbose <elf>`, **no** `+permissive-off` | ✅ `No binary specified (Did you forget it? Did you forget '+permissive-off' if running with +permissive?)` — the ELF was skipped as an unknown token |
+| 26 | simulation-rate sweep on `MINV128D64RocketConfig` — 4 benchmarks, harness cycles vs clean wall | ✅ rate **7 801–8 499 cyc/s** across a 15× workload range (<9% spread). Confirms wall = cycles ÷ near-constant rate (§2.5) |
+| 27 | `mcycle` vs harness cycles, same four runs | ✅ ROI is **4.6–5.0%** of simulated cycles for `vec-strcmp`/`daxpy`/`memcpy`, 20.4% for `vec-sgemm` — `mcycle` understates simulation cost by 5–20× |
+| 28 | `./simulator-chipyard.harness-RocketConfig --bogus <elf>` | ✅ `unrecognized option '--bogus'` then `Unknown argument (did you mean to enable +permissive parsing?)` — that message is for dash-options only, never plusargs |
 
 Config-specific lists in Appendix C.3 were read from the generated
 `chipyard.harness.TestHarness.RocketConfig.d`.
@@ -1001,9 +1104,6 @@ log entry #20).
 ```bash
 source /home/vscode/chipyard/env.sh
 cd /home/vscode/chipyard/sims/verilator
-ISA=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa
-BM=$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks
-OUT=output/chipyard.harness.TestHarness.RocketConfig
 
 # --- build ---
 make CONFIG=RocketConfig
@@ -1011,10 +1111,10 @@ make CONFIG=RocketConfig debug
 make help / make find-configs
 
 # --- way A: single test via make ---
-make run-binary       CONFIG=RocketConfig BINARY=$ISA/rv64ui-p-add
-make run-binary-fast  CONFIG=RocketConfig BINARY=$ISA/rv64ui-p-add
-make run-binary-debug CONFIG=RocketConfig BINARY=$ISA/rv64ui-p-add
-make run-binary       CONFIG=RocketConfig BINARY=$BM/dhrystone.riscv EXTRA_SIM_FLAGS="+max-cycles=100000000"
+make run-binary       CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add
+make run-binary-fast  CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add
+make run-binary-debug CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add
+make run-binary       CONFIG=RocketConfig BINARY=$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks/dhrystone.riscv EXTRA_SIM_FLAGS="+max-cycles=100000000"
 make run-binary       CONFIG=RocketConfig BINARY=../../tests/hello.riscv
 make run-binary       CONFIG=RocketConfig BINARY=test.riscv LOADMEM=1
 
@@ -1027,21 +1127,26 @@ make -j$(nproc) CONFIG=RocketConfig run-regression-tests-fast   # 25-test smoke 
 make -j$(nproc) CONFIG=RocketConfig run-asm-tests-fst
 
 # --- way B: the simulator binary directly (Appendix E) ---
-SIM=./simulator-chipyard.harness-RocketConfig
-DRAMSIM="+dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini"
-$SIM $ISA/rv64ui-p-simple                                   # simplest possible run
+./simulator-chipyard.harness-RocketConfig $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-simple                                   # simplest possible run
 #   order: +permissive <sim plusargs> +permissive-off <ELF>
-$SIM +permissive $DRAMSIM +verbose +permissive-off $ISA/rv64ui-p-simple \
+./simulator-chipyard.harness-RocketConfig +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +verbose +permissive-off $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-simple \
   2>&1 >/dev/null | spike-dasm | tail -1                    # just the verdict
-$SIM +permissive $DRAMSIM +max-cycles=10000000 +verbose +permissive-off $ISA/rv64ui-p-add \
-  </dev/null 2> >(spike-dasm > $OUT/rv64ui-p-add.out) | tee $OUT/rv64ui-p-add.log
-./simulator-chipyard.harness-RocketConfig-debug +permissive $DRAMSIM +max-cycles=10000000 \
-  +verbose +vcdfile=$OUT/rv64ui-p-add.vcd +permissive-off $ISA/rv64ui-p-add
+./simulator-chipyard.harness-RocketConfig +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +max-cycles=10000000 +verbose +permissive-off $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add \
+  </dev/null 2> >(spike-dasm > output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.out) \
+  | tee output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.log
+./simulator-chipyard.harness-RocketConfig-debug +permissive \
+  +dramsim +dramsim_ini_dir=../../generators/testchipip/src/main/resources/dramsim2_ini \
+  +max-cycles=10000000 \
+  +verbose +vcdfile=output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.vcd +permissive-off $RISCV/riscv64-unknown-elf/share/riscv-tests/isa/rv64ui-p-add
 
 # --- results ---
-ls $OUT/*.run | wc -l
-grep -l 'FAILED' $OUT/*.out
-tail -1 $OUT/rv64ui-p-add.out
-grep -a '^C0:' $OUT/rv64ui-p-add.out | less
-rm -f $OUT/*.run
+ls output/chipyard.harness.TestHarness.RocketConfig/*.run | wc -l
+grep -l 'FAILED' output/chipyard.harness.TestHarness.RocketConfig/*.out
+tail -1 output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.out
+grep -a '^C0:' output/chipyard.harness.TestHarness.RocketConfig/rv64ui-p-add.out | less
+rm -f output/chipyard.harness.TestHarness.RocketConfig/*.run
 ```
