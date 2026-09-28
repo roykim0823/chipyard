@@ -9,7 +9,7 @@ guarantee.
 This is document 2 of 2. Read [`Gemmini_ISA_tutorial.md`](Gemmini_ISA_tutorial.md)
 first for one matmul walked from C to the encoded instruction word; this
 document assumes it and does not repeat it. For the hardware underneath, read
-the upstream [`README.md`](../../generators/gemmini/README.md).
+the upstream [`README.md`](../generators/gemmini/README.md).
 
 **Provenance.** rocket-chip `tile/LazyRoCC.scala`, `rocket/IDecode.scala`,
 `rocket/CustomInstructions.scala`, `rocket/RocketCore.scala`;

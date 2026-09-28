@@ -14,7 +14,7 @@ This is document 1 of 2. [`Gemmini_ISA_reference.md`](Gemmini_ISA_reference.md)
 is the instruction-by-instruction reference, and every cross-reference below
 points into it. Read this one start to finish; reach for the reference
 afterwards. For the hardware underneath, read the upstream
-[`README.md`](../../generators/gemmini/README.md) —
+[`README.md`](../generators/gemmini/README.md) —
 its Architecture and Major Components sections, with the figures.
 
 **Provenance.** `ucb-bar/gemmini-rocc-tests` `include/gemmini.h` (**dev**
@@ -641,7 +641,7 @@ register set ([reference §11](Gemmini_ISA_reference.md)).
 | The loop instructions in detail | [reference §11](Gemmini_ISA_reference.md) |
 | What the packing actually costs | [reference §18](Gemmini_ISA_reference.md) |
 | Traps, in a list | [reference §23](Gemmini_ISA_reference.md) |
-| The hardware underneath | upstream [`README.md`](../../generators/gemmini/README.md) |
+| The hardware underneath | upstream [`README.md`](../generators/gemmini/README.md) |
 
 ## Appendix — `tile_matmul_ws`, complete assembly
 
