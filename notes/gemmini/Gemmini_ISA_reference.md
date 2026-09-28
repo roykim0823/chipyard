@@ -264,6 +264,13 @@ bit field inside a register. Note also `x12` — it needed no packing at all,
 because it is already a pointer. §7 covers why some operands are free and
 others are not.
 
+Level [4] above is drawn the way most descriptions give it, with the row index
+filling everything below bit 29. The real bundle is narrower and has a
+`norm_cmd` field in between; §7 gives the exact layout and why the row address
+is only 14 bits wide in the reference configuration. The simplification is
+harmless for ordinary addressing and wrong if you are generating addresses by
+hand.
+
 ### 5. How the core and the accelerator share the work
 
 Four properties of the RoCC contract shape every line of Gemmini code — they
@@ -417,10 +424,84 @@ first.
 | 30 | scratchpad, or accumulator read | ignored |
 | 29 | accumulator **read** | `0` = scaled-down `inputType`, `1` = raw `accType` |
 | 29 | scratchpad, or accumulator write | ignored |
-| 28:0 | always | Row address |
+| low bits | always | row address — **narrower than it looks**, see below |
 
 Reading with bit 29 = 1 bypasses **both** activation and scaling — the raw
 partial-sum path, used when accumulating across outer tiles in software.
+
+#### The row address is not 29 bits wide
+
+Writing the row into "everything below bit 29" works, which is why most
+descriptions stop there. But `LocalAddr.scala` declares a structured bundle, and
+Chisel packs its fields MSB-first in declaration order:
+
+```scala
+val is_acc_addr       = Bool()        // 1
+val accumulate        = Bool()        // 1
+val read_full_acc_row = Bool()        // 1
+val norm_cmd          = NormCmd()     // 3  (8 values)
+val garbage           = UInt(...)     // filler
+val garbage_bit       = UInt(1.W)
+val data              = UInt(maxAddrBits.W)   // the actual row address
+```
+
+`maxAddrBits` is only as wide as the larger of the two memories needs:
+
+```
+  spAddrBits  = log2Ceil(sp_banks  × sp_bank_entries)
+  accAddrBits = log2Ceil(acc_banks × acc_bank_entries)
+  maxAddrBits = max(spAddrBits, accAddrBits)
+```
+
+For the reference configuration that is `log2Ceil(4 × 4096) = 14` and
+`log2Ceil(2 × 512) = 10`, so **`maxAddrBits = 14`** and the 32 bits divide up
+as:
+
+```
+ 31   30   29   28  26 25           15 14  13             0
++----+----+----+------+---------------+---+----------------+
+| acc| ovr| rd | norm |    garbage    | gb|  row address   |
+|    |    |    | _cmd |               |   |     (data)     |
++----+----+----+------+---------------+---+----------------+
+   1    1    1     3          11         1        14
+```
+
+Three consequences:
+
+- **`norm_cmd` lives in the address**, bits `[28:26]`. The I-BERT
+  normalization path (§8, `config_norm`) selects its operation here, not through
+  a separate opcode. Ordinary matmul code leaves these bits zero, which is
+  `NormCmd.RESET`.
+- **The row address is config-dependent.** A Gemmini elaborated with a larger
+  scratchpad widens `data` and narrows `garbage`. Nothing in the *software* ABI
+  changes, because the library always computes row numbers from `BANK_NUM`,
+  `BANK_ROWS` and `ACC_ROWS` in `gemmini_params.h` — but hand-written addresses
+  are not portable across configs.
+- **There is no bounds check.** A row number ≥ `2^maxAddrBits` overflows into
+  `garbage_bit` and `garbage` rather than faulting. It will not trap; it will
+  address the wrong row, or look like `GARBAGE_ADDR` if enough bits set.
+
+#### How many rows are there
+
+From `gemmini_params.h` for the reference configuration:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `BANK_NUM` | 4 | scratchpad banks |
+| `BANK_ROWS` | 4096 | rows per scratchpad bank |
+| `ACC_ROWS` | 1024 | accumulator rows, **total** |
+| `MAX_BYTES` | 64 | largest DMA burst |
+
+So the scratchpad is `BANK_NUM × BANK_ROWS = 16384` rows of `DIM` `inputType`
+elements — 16 B each, 256 KiB — and the accumulator is 1024 rows of `DIM`
+`accType` elements, 64 B each, 64 KiB. Both fall straight out of `sp_capacity`
+and `acc_capacity` divided by the row width, which is why changing a datatype
+changes the row count.
+
+Budget in tiles, not bytes: one `DIM × DIM` tile is `DIM` rows, so the
+scratchpad holds 1024 tiles and the accumulator 64. The library's usual layout
+puts `A` at row 0 growing up and `B` at the top growing down — the
+`BANK_NUM*BANK_ROWS − K*J*DIM` expression in §9's examples is exactly that.
 
 Common values:
 
@@ -531,6 +612,40 @@ Two patterns:
 ---
 
 ## Part III — Instruction reference
+
+Seven sections, in the order a program issues them. If you know what you want to
+do, start here:
+
+| I want to… | Instruction | § |
+|---|---|---|
+| Set dataflow, activation, transposes, `acc_scale` | `config_ex` | §8 |
+| Set a DRAM stride or mvin scale | `config_ld` (pick the port with `id`) | §8 |
+| Set the `mvout` stride and output scale | `config_st` | §8 |
+| Set up layernorm / softmax / GELU constants | `config_norm` | §8 |
+| Copy DRAM → scratchpad or accumulator | `mvin` / `mvin2` / `mvin3` | §9 |
+| Copy local → DRAM, requantizing | `mvout` | §9 |
+| Copy scratchpad → scratchpad | `mvout_spad` | §9 |
+| Stage the stationary operand, name where C goes | `preload` | §10 |
+| Run the array against what was just staged | `compute.preloaded` | §10 |
+| Run it again reusing the resident operand | `compute.accumulated` | §10 |
+| Tile a whole matmul in hardware | `loop_ws` + its 5 latches | §11 |
+| Tile a whole convolution in hardware | `loop_conv_ws` + its 6 latches | §11 |
+| Unstick a DMA blocked on a page fault | `flush` | §12 |
+| Read a performance counter | `counter_access` | §12 |
+| Wait for Gemmini to go idle | plain RISC-V `fence` | §12 |
+
+Three rules cover almost everything below, and are worth holding in mind while
+reading it:
+
+1. **Configuration is latched, write-only state.** It persists until the next
+   `config_*` of the same kind, cannot be read back, and is not saved across a
+   context switch (§21).
+2. **`rs2` is almost always `rows | cols | local address`** (§7). The
+   interesting information is in the low 32 bits.
+3. **Scratchpad-versus-accumulator, overwrite-versus-accumulate and
+   scaled-versus-raw are all address bits, not opcodes** (§7). Several
+   operations that look like distinct instructions are the same instruction with
+   a different constant.
 
 ### 8. Configuration instructions (funct7 = 0)
 
@@ -706,6 +821,52 @@ The three `mvin`s are **functionally identical hardware**. They exist so A, B,
 and D can each hold their own DRAM stride and scale simultaneously. Library
 convention: `mvin` = A, `mvin2` = B, `mvin3` = D. Configure once outside the
 loop; never touch `config_ld` in the inner loop.
+
+#### `cols > DIM`: the block move
+
+`rows` must be ≤ `DIM` — one instruction can never write more rows than the
+array is wide. `cols` has no such limit, and exceeding `DIM` changes what the
+instruction means: instead of one submatrix, the DMA writes **several**, each
+`DIM` columns wide, walking down the scratchpad by `block_mvin_stride` rows
+between them.
+
+```
+  DRAM: one 16-row region, 48 columns wide          mvin with cols = 48, rows = 16
+  ┌───────────────┬───────────────┬───────────────┐  block_mvin_stride = 16
+  │   cols 0-15   │  cols 16-31   │  cols 32-47   │
+  └───────┬───────┴───────┬───────┴───────┬───────┘
+          │               │               │
+          ▼               ▼               ▼
+  scratchpad                                        ┐
+  ┌───────────────┐  row 0                          │ one instruction,
+  │  submatrix 0  │                                 │ three submatrices,
+  ├───────────────┤  row 16  ( +block_mvin_stride ) │ one DMA stream
+  │  submatrix 1  │                                 │
+  ├───────────────┤  row 32  ( +block_mvin_stride ) │
+  │  submatrix 2  │                                 │
+  └───────────────┘                                 ┘
+```
+
+In `DMA.scala` the destination is computed as
+
+```scala
+entry.addr := req.spaddr + req.block_stride * (bytesRequested / rowWidthBytes)
+```
+
+so each `DIM`-element chunk consumed from the DRAM stream lands one
+`block_stride` further on. `LoadController.scala` asserts
+`block_stride >= rows`, since a smaller stride would make consecutive
+submatrices overlap.
+
+Two reasons to use it. It **cuts instruction count** — one `mvin` instead of
+three, and one set of host-side operand packing instead of three (§18). And each
+DRAM row is read as one run of `cols` elements rather than three runs of `DIM`,
+so the DMA has longer contiguous spans to turn into TileLink bursts; §5 notes
+that request count limits DMA throughput more than bytes moved do.
+
+`block_mvin_stride` defaults to `DIM` in the narrow `config_ld` macros, which is
+the dense back-to-back layout drawn above. Set it larger to leave gaps — useful
+when submatrices are loaded in several passes and must interleave.
 
 Full encoding of one `mvin`, for reference:
 
