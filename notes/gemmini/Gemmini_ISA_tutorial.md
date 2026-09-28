@@ -8,7 +8,7 @@ though no disassembler will tell you.
 
 §2 first builds the picture the rest depends on — how a weight-stationary array
 actually computes `A · B`, and why that forces two instructions per matmul.
-§8 closes by scaling the one tile up to a real matrix.
+§7 closes by scaling the one tile up to a real matrix.
 
 This is document 1 of 2. [`Gemmini_ISA_reference.md`](Gemmini_ISA_reference.md)
 is the instruction-by-instruction reference, and every cross-reference below
@@ -492,7 +492,7 @@ Reading the assembly, three things stand out:
 - **Every Gemmini instruction has the same shape.** Eleven `.insn r CUSTOM_3, 0x3, F, x0, rs1, rs2`
   lines, and the only things that vary are `F`, the `funct7` that selects the operation
   ([reference appendix A](Gemmini_ISA_reference.md)), and two register *numbers*. There is no immediate, no address, no size in the
-  instruction word. All of that is in the two registers it names, and Gemmini slices it out (§7.3).
+  instruction word. All of that is in the two registers it names, and Gemmini slices it out ([reference §4](Gemmini_ISA_reference.md)).
 - **The rest is constant-building.** In the full listing, thirty-one RV64I instructions serve
   eleven Gemmini instructions, and not one of them computes anything about the matrices: they are
   `lui`, `slli`, `addi` and `or` assembling 64-bit bit-fields. The compiler is clever about it.
@@ -507,8 +507,8 @@ Reading the assembly, three things stand out:
   pass into `rs1` fields untouched, Gemmini's own DMA and TLB fetch through them ([reference §5](Gemmini_ISA_reference.md)), and the
   `fence` is the only point where the host waits.
 
-Here is one of those words as the assembler encodes it, the `mvin` of A, so that §7.3's picture has
-a concrete instance. `a0` is `x10` and `t0` is `x5`:
+Here is one of those words as the assembler encodes it, the `mvin` of A. `a0`
+is `x10` and `t0` is `x5`:
 
 ```
 .insn r CUSTOM_3, 0x3, 2, x0, a0, t0      ->   0x0455307B
@@ -523,8 +523,10 @@ a concrete instance. `a0` is `x10` and `t0` is `x5`:
 
 `llvm-objdump` prints this word as `<unknown>`. Nothing in the RISC-V toolchain knows what it
 means; only Gemmini's decoder does, and what it decodes is `funct7` plus two register numbers
-whose *contents* are a pointer (`0x0000_0000_8FF3_2100`, if A lives where the reference's examples put it) and `0x0010_0010_0000_0000` (rows, cols, local address). §7 follows those two
-values from the register file into the accelerator.
+whose *contents* are a pointer (`0x0000_0000_8FF3_2100`, if A lives where the reference's examples
+put it) and `0x0010_0010_0000_0000` (rows, cols, local address). That word, and those two values,
+are the concrete instance of the four-level nesting drawn in
+[reference §4](Gemmini_ISA_reference.md).
 
 Count what was executed for the 16 × 16 × 16 tile:
 
@@ -554,95 +556,27 @@ worked trace of the same tile with the library's addresses is [reference §14](G
 > building operands, and Gemmini's two throughput mechanisms, decoupled execution and the CISC
 > loops, both exist to hide it.
 
----
+### Where everything actually lives
+
+Three things, three places. The **instruction** is a 32-bit word in `.text`,
+fetched through the I-cache like any other. The **operands** are 64-bit values
+in the integer register file — the instruction carries only 5-bit register
+numbers. And the **local address** is a bit field inside one of those values,
+because Gemmini has no architectural registers of its own to name.
+
+That last point resolves the puzzle the tables create: the instruction is 32
+bits, the local address is *also* 32 bits, and they appear not to fit. They
+never have to — one is a word in memory, the other is a field inside a
+register, and they sit at different depths.
+
+[Reference §4](Gemmini_ISA_reference.md) draws all four levels of that
+nesting for the `mvin` above — instruction word, register values, packed triple,
+local address — and [reference §15](Gemmini_ISA_reference.md) gives the
+same journey as a pipeline from C source to the accelerator.
 
 ---
 
-## 7. Where the instruction and its operands live
-
-§1–§6 followed one 16 × 16 tile from C source to the assembler's output. This section
-explains the mechanism behind each of those `.insn` lines: where the instruction lives, where its operands
-live, and how they reach the accelerator.
-
-### 7.1 The short version
-
-Three things, three places. Everything else in this section elaborates these:
-
-1. **The instruction** is a 32-bit word in `.text`, fetched through the I-cache like any RISC-V
-   instruction.
-2. **The operands** are 64-bit values in the CPU's integer register file. The instruction carries
-   only 5-bit register *numbers*.
-3. **Gemmini has no architectural registers.** The only Gemmini state software can name is SRAM,
-   addressed by a 32-bit value that lives *inside* one of those 64-bit registers.
-
-That third point resolves the puzzle the ISA tables create: the instruction is 32 bits, the local
-address is *also* 32 bits, and they seem not to fit. They don't need to — they sit at different
-depths.
-
-### 7.2 The five stages
-
-```
- C source  ->  compiler  ->  .text  ->  CPU regfile  ->  RoCC port  ->  Gemmini
- (a macro)     (packs        (one      (two 64-bit      (delivers       (slices
-               operands)     custom3    values)          values)         fields)
-                             word)
-```
-
-| Stage | What happens |
-|---|---|
-| **C source** | One macro call, e.g. `gemmini_extended_mvin(...)` |
-| **Compiler** | Expands the macro to inline asm with two `"r"` operands; emits plain RV64I to compute them |
-| **`.text`** | One 32-bit `custom3` instruction naming two registers |
-| **CPU regfile** | Holds the two 64-bit operand values |
-| **RoCC port** | Rocket reads the regfile and sends a `RoCCCommand` bundle of *values* |
-| **Gemmini** | Decodes `funct7`, slices the 64-bit operands into fields |
-
-### 7.3 Zooming in
-
-Follow one `mvin` down through the levels. Each box is a field of the box above it:
-
-```
- [1] custom3 instruction — 32 bits, lives in .text
-     +---------------+-----------+-----------+-------+-----------+--------------+
-     |  funct7 = 2   | rs2 = x13 | rs1 = x12 |  011  |  rd = x0  |   custom3    |
-     +---------------+-----------+-----------+-------+-----------+--------------+
-                      \_____________________/
-                        5-bit register NUMBERS, not values
-                                 |
-                                 |  Rocket decodes, then reads the register file
-                                 v
- [2] integer register file — the 64-bit VALUES, in the CPU
-     x12 = 0x0000_0000_8FF3_2100   <- rs1   bare pointer, nothing packed
-     x13 = 0x0010_0010_8000_0040   <- rs2   packed triple, expanded below
-                                 |
-                                 v
- [3] x13 contents — 64 bits, built by compiler-emitted RV64I
-     +------------------+------------------+------------------------------------+
-     |    rows = 16     |    cols = 16     |    local address = 0x8000_0040     |
-     |     [63:48]      |     [47:32]      |               [31:0]               |
-     +------------------+------------------+------------------------------------+
-                                                              |
-                                                              v
- [4] local address — 32 bits, a FIELD inside x13, not a register
-     +------+------+------+-----------------------------------------------------+
-     | acc  | ovr  |  rd  |                   row index 0x40                    |
-     | [31] | [30] | [29] |                       [28:0]                        |
-     +------+------+------+-----------------------------------------------------+
-```
-
-The instruction (top) contains `rs2 = x13` — a *register number*. `x13` (second row) holds a 64-bit
-*value*. That value decomposes into rows, cols, and a 32-bit local address (third row). And that
-local address itself decomposes into three flag bits plus a row index (bottom row).
-
-So the two 32-bit things never coexist: one is a word in memory, the other is a bit field inside a
-register. Note also `x12` on the right — it needed no packing at all, because it is already a
-pointer. [Reference §18](Gemmini_ISA_reference.md) covers why some operands are free and others are not.
-
----
-
----
-
-## 8. Past one tile
+## 7. Past one tile
 
 Everything so far was one `DIM × DIM × DIM` tile. Real matrices are bigger, and
 the array still only does 16 × 16. So you tile: split `C = A · B + D` into

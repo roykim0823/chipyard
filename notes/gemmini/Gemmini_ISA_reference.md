@@ -1218,6 +1218,19 @@ the operand values.
                              word)
 ```
 
+| Stage | What happens |
+|---|---|
+| **C source** | One macro call, e.g. `gemmini_extended_mvin(...)` |
+| **Compiler** | Expands the macro to inline asm with two `"r"` operands; emits plain RV64I to compute them |
+| **`.text`** | One 32-bit `custom3` instruction naming two registers |
+| **CPU regfile** | Holds the two 64-bit operand values |
+| **RoCC port** | At writeback, Rocket sends a `RoCCCommand` bundle of *values* (§20) |
+| **Gemmini** | Decodes `funct7`, slices the 64-bit operands into fields |
+
+§4 draws the same journey as nesting rather than as a pipeline — the instruction
+word, the register values, the packed triple, the local address — which is the
+view to have in mind when reading §16–§18.
+
 Each stage is walked with a concrete 16 × 16 tile — C source, preprocessor
 output, emitted assembly, encoded word — in
 [`Gemmini_ISA_tutorial.md`](Gemmini_ISA_tutorial.md) §5–§6. What follows here is
