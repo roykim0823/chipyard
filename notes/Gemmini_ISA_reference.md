@@ -1394,7 +1394,7 @@ view to have in mind when reading §16–§18.
 
 Each stage is walked with a concrete 16 × 16 tile — C source, preprocessor
 output, emitted assembly, encoded word — in
-[`Gemmini_ISA_tutorial.md`](Gemmini_ISA_tutorial.md) §5–§6. What follows here is
+[`Gemmini_ISA_tutorial.md`](Gemmini_ISA_tutorial.md#5-what-a-macro-actually-is) §5–§6. What follows here is
 the general rule rather than the example: §16 the macro layers, §17 the three
 headers and their in-tree paths, §18 what the packing costs.
 

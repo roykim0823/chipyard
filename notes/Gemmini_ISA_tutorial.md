@@ -77,7 +77,7 @@ and `#define DIM 16` is the first thing in it. Every tiling loop, every scratchp
 every stride in the library is written in terms of `DIM`. There is no `vsetvli`, no run-time query,
 and a binary tiled for `DIM = 16` is not the right binary for a `DIM = 32` Gemmini. What Gemmini
 *does* borrow from the vector world is the answer to question 2: every instruction that names a
-tile carries an explicit `rows` and `cols` count in its operand ([reference §7](Gemmini_ISA_reference.md)), so a 13 × 16 edge tile is
+tile carries an explicit `rows` and `cols` count in its operand ([reference §7](Gemmini_ISA_reference.md#7-operands-addresses-shapes-and-packing)), so a 13 × 16 edge tile is
 the *same* `mvin` and the *same* `compute` with smaller fields, not a separate scalar loop. That
 count is Gemmini's `vl`, and it travels inside each instruction rather than in a control register.
 
@@ -156,7 +156,7 @@ of two operands changes:
 | **Output-stationary** | `D` — the bias | `B` |
 
 Getting this backwards does not fault. It produces plausible, wrong numbers —
-which is why [reference §23](Gemmini_ISA_reference.md) lists it as a
+which is why [reference §23](Gemmini_ISA_reference.md#23-gotchas) lists it as a
 standing trap.
 
 ### Where the bias actually goes
@@ -215,7 +215,7 @@ another four thousand or so instructions on top of the 28,672 in the `k` loop. C
 ## 4. The same tile with the Gemmini macros
 
 Here is the N = 16 case written against `gemmini.h`. The scratchpad and accumulator are
-**row-addressed** ([reference §7](Gemmini_ISA_reference.md)): one address names one row
+**row-addressed** ([reference §7](Gemmini_ISA_reference.md#7-operands-addresses-shapes-and-packing)): one address names one row
 of `DIM` elements — not one element — so a 16 × 16 tile occupies 16 consecutive
 rows. (The library puts `B` at the top of the scratchpad rather than at row 16;
 any free rows work.)
@@ -285,14 +285,14 @@ appear, and [the reference](Gemmini_ISA_reference.md) has a section for each:
 
 | Call | funct7 | What it does | Reference § |
 |---|---|---|---|
-| `gemmini_config_ex` | 0 | Dataflow (WS), activation, output shift, strides. Latched; write-only. | ref §8 |
-| `gemmini_extended3_config_ld` ×3 | 0 | DRAM stride and scale for `mvin`, `mvin2`, `mvin3` respectively (the `id` argument) | ref §8 |
-| `gemmini_config_st` | 0 | DRAM stride and `acc_scale` for `mvout` | ref §8 |
-| `gemmini_extended_mvin` / `mvin2` / `mvin3` | 2 / 1 / 14 | DMA a `rows × cols` block from a virtual address into a local address | ref §9 |
-| `gemmini_extended_preload` | 6 | Load the stationary operand (B in WS) into the array; name where C goes | ref §10 |
-| `gemmini_extended_compute_preloaded` | 4 | Stream A through the array against the preloaded B | ref §10 |
-| `gemmini_extended_mvout` | 3 | DMA a `rows × cols` block from a local address to a virtual address | ref §9 |
-| `gemmini_fence` | — | A plain RISC-V `fence`; Rocket holds it until Gemmini is idle | ref §12 |
+| `gemmini_config_ex` | 0 | Dataflow (WS), activation, output shift, strides. Latched; write-only. | [§8](Gemmini_ISA_reference.md#8-configuration-instructions-funct7-0) |
+| `gemmini_extended3_config_ld` ×3 | 0 | DRAM stride and scale for `mvin`, `mvin2`, `mvin3` respectively (the `id` argument) | [§8](Gemmini_ISA_reference.md#8-configuration-instructions-funct7-0) |
+| `gemmini_config_st` | 0 | DRAM stride and `acc_scale` for `mvout` | [§8](Gemmini_ISA_reference.md#8-configuration-instructions-funct7-0) |
+| `gemmini_extended_mvin` / `mvin2` / `mvin3` | 2 / 1 / 14 | DMA a `rows × cols` block from a virtual address into a local address | [§9](Gemmini_ISA_reference.md#9-data-movement) |
+| `gemmini_extended_preload` | 6 | Load the stationary operand (B in WS) into the array; name where C goes | [§10](Gemmini_ISA_reference.md#10-execute) |
+| `gemmini_extended_compute_preloaded` | 4 | Stream A through the array against the preloaded B | [§10](Gemmini_ISA_reference.md#10-execute) |
+| `gemmini_extended_mvout` | 3 | DMA a `rows × cols` block from a local address to a virtual address | [§9](Gemmini_ISA_reference.md#9-data-movement) |
+| `gemmini_fence` | — | A plain RISC-V `fence`; Rocket holds it until Gemmini is idle | [§12](Gemmini_ISA_reference.md#12-control) |
 
 Laid out as a pipeline, the eleven instructions and their dependencies:
 
@@ -330,11 +330,11 @@ Three details of the C worth noticing before we look underneath it:
 - **The bias enters through the accumulator, not through `compute`.** `mvin3` writes `D` into
   accumulator rows 0–15 with the *overwrite* address (`0x8000_0000`). The `preload` then names C
   as `0xC000_0000`, the *accumulate* address, so `A · B` lands on top of `D`. The second operand
-  of `compute` is `GARBAGE_ADDR` because in weight-stationary mode nothing arrives that way ([reference §10](Gemmini_ISA_reference.md)).
+  of `compute` is `GARBAGE_ADDR` because in weight-stationary mode nothing arrives that way ([reference §10](Gemmini_ISA_reference.md#10-execute)).
 - **`D` has its own load configuration.** It is `int32`, so its DRAM row stride is 64 bytes where
   `A` and `B` have 16, and the three `mvin`s exist precisely so that A, B and D can each carry a
-  different stride and scale at the same time ([reference §9](Gemmini_ISA_reference.md)). Forgetting the `id` argument configures the
-  wrong one ([reference §23, item 9](Gemmini_ISA_reference.md)).
+  different stride and scale at the same time ([reference §9](Gemmini_ISA_reference.md#9-data-movement)). Forgetting the `id` argument configures the
+  wrong one ([reference §23, item 9](Gemmini_ISA_reference.md#23-gotchas)).
 - **Every count is `DIM`.** `rows = cols = DIM` on every move and compute. For an edge tile you
   pass the true size, and the same eleven instructions handle it; that is the whole of Gemmini's
   tail handling.
@@ -389,11 +389,11 @@ inline-assembly statement. Here are the definitions the tile uses, verbatim from
 
 Two things to see in these. First, the *shape* of every operand is decided here, in C, by the
 header author: `rows` goes to bits `[63:48]`, `cols` to `[47:32]`, the local address to `[31:0]`
-([reference §7](Gemmini_ISA_reference.md)), and `ADDR_LEN + 16` is just 48. Second, the only thing that reaches the assembler is one
+([reference §7](Gemmini_ISA_reference.md#7-operands-addresses-shapes-and-packing)), and `ADDR_LEN + 16` is just 48. Second, the only thing that reaches the assembler is one
 `.insn r` directive with two `"r"` operands. `"r"(expr)` tells the compiler: evaluate this C
 expression, put the result in some general-purpose register, and write that register's name here.
 `%0` becomes the `rs1` field and `%1` the `rs2` field, strictly by the order the constraints are
-declared. [Reference §16](Gemmini_ISA_reference.md) states the general rule.
+declared. [Reference §16](Gemmini_ISA_reference.md#16-the-macro-layers) states the general rule.
 
 Run the preprocessor (`clang -E`) over the `mvin` of `A` and the `preload`, and this is the whole
 of what the compiler sees:
@@ -412,7 +412,7 @@ of what the compiler sees:
 strings `"2"` and `"6"`, and the two operand expressions are plain 64-bit integer arithmetic. The
 `mvin`'s first operand is `A` itself: a pointer is already a 64-bit value in a register and needs
 no packing at all. Its second operand, and both operands of the `preload`, are shifts and ORs the
-compiler must now turn into RV64I instructions. That asymmetry is the subject of [reference §18](Gemmini_ISA_reference.md).
+compiler must now turn into RV64I instructions. That asymmetry is the subject of [reference §18](Gemmini_ISA_reference.md#18-operand-packing-and-its-cost).
 
 ## 6. The same function in assembly
 
@@ -491,8 +491,8 @@ Reading the assembly, three things stand out:
 
 - **Every Gemmini instruction has the same shape.** Eleven `.insn r CUSTOM_3, 0x3, F, x0, rs1, rs2`
   lines, and the only things that vary are `F`, the `funct7` that selects the operation
-  ([reference appendix A](Gemmini_ISA_reference.md)), and two register *numbers*. There is no immediate, no address, no size in the
-  instruction word. All of that is in the two registers it names, and Gemmini slices it out ([reference §4](Gemmini_ISA_reference.md)).
+  ([reference appendix A](Gemmini_ISA_reference.md#a-complete-funct7-map)), and two register *numbers*. There is no immediate, no address, no size in the
+  instruction word. All of that is in the two registers it names, and Gemmini slices it out ([reference §4](Gemmini_ISA_reference.md#4-one-instruction-four-levels)).
 - **The rest is constant-building.** In the full listing, thirty-one RV64I instructions serve
   eleven Gemmini instructions, and not one of them computes anything about the matrices: they are
   `lui`, `slli`, `addi` and `or` assembling 64-bit bit-fields. The compiler is clever about it.
@@ -502,9 +502,9 @@ Reading the assembly, three things stand out:
   straight-line code with compile-time `DIM` this sharing is free. Inside a real tiling loop,
   where every scratchpad address is `base + (i*K + k)*DIM` and edge tiles have run-time
   `rows`/`cols`, it disappears, and each `preload`/`compute` pair costs 12–20 host instructions
-  ([reference §18](Gemmini_ISA_reference.md)).
+  ([reference §18](Gemmini_ISA_reference.md#18-operand-packing-and-its-cost)).
 - **The host never touches the data.** There is no `lb`, no `mul`, no `sb`. The pointers `a0`–`a3`
-  pass into `rs1` fields untouched, Gemmini's own DMA and TLB fetch through them ([reference §5](Gemmini_ISA_reference.md)), and the
+  pass into `rs1` fields untouched, Gemmini's own DMA and TLB fetch through them ([reference §5](Gemmini_ISA_reference.md#5-how-the-core-and-the-accelerator-share-the-work)), and the
   `fence` is the only point where the host waits.
 
 Here is one of those words as the assembler encodes it, the `mvin` of A. `a0`
@@ -526,7 +526,7 @@ means; only Gemmini's decoder does, and what it decodes is `funct7` plus two reg
 whose *contents* are a pointer (`0x0000_0000_8FF3_2100`, if A lives where the reference's examples
 put it) and `0x0010_0010_0000_0000` (rows, cols, local address). That word, and those two values,
 are the concrete instance of the four-level nesting drawn in
-[reference §4](Gemmini_ISA_reference.md).
+[reference §4](Gemmini_ISA_reference.md#4-one-instruction-four-levels).
 
 Count what was executed for the 16 × 16 × 16 tile:
 
@@ -538,17 +538,17 @@ Count what was executed for the 16 × 16 × 16 tile:
 | Host instructions per multiply-accumulate | 7 | 0.01 |
 | Bytes per load | 1 | 256 per `mvin` (16 rows × 16 B), 1,024 for D |
 
-Thirty-one of the forty-four instructions are packing cost. [Reference §18](Gemmini_ISA_reference.md) returns to that cost in the
+Thirty-one of the forty-four instructions are packing cost. [Reference §18](Gemmini_ISA_reference.md#18-operand-packing-and-its-cost) returns to that cost in the
 general case, and it is why the CISC loop instructions exist: for a 64 × 64 problem the tile
 above becomes 64 `preload`/`compute` pairs plus their moves, on the order of a thousand host
-instructions hand-tiled, or six instructions with `gemmini_loop_ws` ([reference §11](Gemmini_ISA_reference.md)). A
-worked trace of the same tile with the library's addresses is [reference §14](Gemmini_ISA_reference.md).
+instructions hand-tiled, or six instructions with `gemmini_loop_ws` ([reference §11](Gemmini_ISA_reference.md#11-cisc-loop-instructions)). A
+worked trace of the same tile with the library's addresses is [reference §14](Gemmini_ISA_reference.md#14-a-complete-matmul-end-to-end).
 
 > **Mental model so far.** A Gemmini program is a stream of ordinary RISC-V instructions, each a
 > 32-bit `custom3` word that names an operation and two registers. The registers hold 64-bit
 > values that the header's macros pack from C expressions: a DRAM pointer travels as itself, while
 > a local operand is `rows | cols | local address`, and the local address itself carries the
-> scratchpad-versus-accumulator and overwrite-versus-accumulate choices in its top bits ([reference §7](Gemmini_ISA_reference.md)).
+> scratchpad-versus-accumulator and overwrite-versus-accumulate choices in its top bits ([reference §7](Gemmini_ISA_reference.md#7-operands-addresses-shapes-and-packing)).
 > The matmul is one `preload`/`compute` pair per `DIM × DIM × DIM` tile; the reduction over `k`
 > happens inside the array; bias, scaling and activation happen in the accumulator on the way in
 > and out. `DIM` is fixed by the hardware and known to the program, but every instruction carries
@@ -569,9 +569,9 @@ bits, the local address is *also* 32 bits, and they appear not to fit. They
 never have to — one is a word in memory, the other is a field inside a
 register, and they sit at different depths.
 
-[Reference §4](Gemmini_ISA_reference.md) draws all four levels of that
+[Reference §4](Gemmini_ISA_reference.md#4-one-instruction-four-levels) draws all four levels of that
 nesting for the `mvin` above — instruction word, register values, packed triple,
-local address — and [reference §15](Gemmini_ISA_reference.md) gives the
+local address — and [reference §15](Gemmini_ISA_reference.md#15-from-c-macro-to-instruction) gives the
 same journey as a pipeline from C source to the accelerator.
 
 ---
@@ -591,7 +591,7 @@ costs:
 `compute`. In a loop, the scratchpad address is `base + (i*K + k)*DIM` — a
 multiply and an add per operand, per instruction, and the shift-and-OR to pack
 it back into bits `[31:0]`. What was free becomes 12–20 host instructions per
-pair ([reference §18](Gemmini_ISA_reference.md)).
+pair ([reference §18](Gemmini_ISA_reference.md#18-operand-packing-and-its-cost)).
 
 **2. Edge tiles.** If the matrix is not a multiple of `DIM`, the last tile in
 each direction is short. This costs nothing structurally — you pass the true
@@ -605,7 +605,7 @@ packed rather than folded into a constant.
 `preload`s pass `GARBAGE_ADDR` to keep the weights in place. Both are *address*
 changes; no opcode changes. The library's real loop
 (`sp_tiled_matmul_ws` in `gemmini.h`) is reproduced in
-[reference §10](Gemmini_ISA_reference.md).
+[reference §10](Gemmini_ISA_reference.md#10-execute).
 
 ### The CISC escape hatch
 
@@ -630,17 +630,17 @@ traffic and schedules better than most hand-written loops.
 
 The five `config` instructions latch into registers and the sixth fires. They
 must be issued as an uninterrupted group — there is no tag, just one latched
-register set ([reference §11](Gemmini_ISA_reference.md)).
+register set ([reference §11](Gemmini_ISA_reference.md#11-cisc-loop-instructions)).
 
 ### Where to go next
 
 | You want | Go to |
 |---|---|
-| The encoding of any instruction here | [reference §8–§12](Gemmini_ISA_reference.md) |
-| The full WS tiling loop as the library writes it | [reference §10](Gemmini_ISA_reference.md) |
-| The loop instructions in detail | [reference §11](Gemmini_ISA_reference.md) |
-| What the packing actually costs | [reference §18](Gemmini_ISA_reference.md) |
-| Traps, in a list | [reference §23](Gemmini_ISA_reference.md) |
+| The encoding of any instruction here | [reference §8–§12](Gemmini_ISA_reference.md#8-configuration-instructions-funct7-0) |
+| The full WS tiling loop as the library writes it | [reference §10](Gemmini_ISA_reference.md#10-execute) |
+| The loop instructions in detail | [reference §11](Gemmini_ISA_reference.md#11-cisc-loop-instructions) |
+| What the packing actually costs | [reference §18](Gemmini_ISA_reference.md#18-operand-packing-and-its-cost) |
+| Traps, in a list | [reference §23](Gemmini_ISA_reference.md#23-gotchas) |
 | The hardware underneath | upstream [`README.md`](../generators/gemmini/README.md) |
 
 ## Appendix — `tile_matmul_ws`, complete assembly
