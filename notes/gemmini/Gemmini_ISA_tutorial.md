@@ -6,6 +6,10 @@ macros expand to, and as the assembly the compiler finally emits. By the end you
 should be able to read any line of Gemmini assembly and know what it does, even
 though no disassembler will tell you.
 
+§2 first builds the picture the rest depends on — how a weight-stationary array
+actually computes `A · B`, and why that forces two instructions per matmul.
+§8 closes by scaling the one tile up to a real matrix.
+
 This is document 1 of 2. [`Gemmini_ISA_reference.md`](Gemmini_ISA_reference.md)
 is the instruction-by-instruction reference, and every cross-reference below
 points into it. Read this one start to finish; reach for the reference
@@ -77,7 +81,103 @@ tile carries an explicit `rows` and `cols` count in its operand ([reference §7]
 the *same* `mvin` and the *same* `compute` with smaller fields, not a separate scalar loop. That
 count is Gemmini's `vl`, and it travels inside each instruction rather than in a control register.
 
-## 2. The scalar version, and what it costs
+## 2. How a weight-stationary array multiplies
+
+Before the code, the picture the code is written against. Everything in §4 —
+why there are two instructions per matmul, why `B` is named by one and `A` by
+the other, why the bias arrives through a third path — follows from this.
+
+A systolic array is a grid of multiply-accumulate units with no instruction
+fetch and no register file. Data flows between neighbours on wires. In
+**weight-stationary** mode, one element of `B` is loaded into each PE and
+*stays there*, while `A` streams through:
+
+```
+           B is resident: PE at (row k, col j) holds b[k][j]
+           A enters from the left, one row of A per cycle
+           partial sums flow DOWN and accumulate
+
+                        j=0      j=1      j=2
+                     +--------+--------+--------+
+  a[i][0] ─────────► │  b00   │  b01   │  b02   │   k=0
+                     +--------+--------+--------+
+  a[i][1] ─────────► │  b10   │  b11   │  b12   │   k=1
+                     +--------+--------+--------+
+  a[i][2] ─────────► │  b20   │  b21   │  b22   │   k=2
+                     +--------+--------+--------+
+                          │        │        │
+                          ▼        ▼        ▼
+                       c[i][0]  c[i][1]  c[i][2]
+```
+
+Follow one column. PE `(0,j)` computes `a[i][0] · b[0][j]` and passes it down.
+PE `(1,j)` computes `a[i][1] · b[1][j]`, **adds what came from above**, and
+passes that down. By the time the value leaves the bottom of column `j` it is
+
+```
+    c[i][j] = a[i][0]·b[0][j] + a[i][1]·b[1][j] + a[i][2]·b[2][j] + ...
+```
+
+which is exactly the `k` loop of the scalar version — except it is a column of
+wires and adders, not a loop. **That is where the 33,000 instructions went.**
+No instruction is fetched for any of those multiplies or adds; feed one row of
+`A` per cycle and one row of `C` falls out the bottom per cycle.
+
+### Why this needs two instructions
+
+Loading `B` into the array and streaming `A` through it are physically
+different operations on different cycles, and a single RISC-V instruction
+cannot name four matrices anyway. So every matmul is a **pair**:
+
+```
+    preload   rs1 = the stationary operand    rs2 = where C goes
+    compute   rs1 = A                         rs2 = the other operand
+```
+
+`preload` pushes `B` into the PEs and names the destination for `C`. `compute`
+then streams `A` through. The array sits idle between them — `preload` commits
+immediately and waits.
+
+This also explains the payoff that makes WS worth using. Loading weights is
+expensive; streaming activations is cheap. If the next matmul uses the *same*
+`B`, you skip the reload and issue `compute.accumulated` instead, or pass
+`GARBAGE_ADDR` as `preload`'s `rs1` to mean "keep what you have". A tiling loop
+is built around reusing one resident `B` across many `A` tiles.
+
+### The operand roles swap between dataflows
+
+Gemmini also supports **output-stationary**, where `D` is resident and both `A`
+and `B` stream through. The instruction encoding is identical; only the meaning
+of two operands changes:
+
+| | `preload` rs1 holds | `compute` rs2 holds |
+|---|---|---|
+| **Weight-stationary** | `B` — the weights | `D` — the bias |
+| **Output-stationary** | `D` — the bias | `B` |
+
+Getting this backwards does not fault. It produces plausible, wrong numbers —
+which is why [reference §23](Gemmini_ISA_reference.md) lists it as a
+standing trap.
+
+### Where the bias actually goes
+
+One more consequence, and it is the detail that makes the code in §4 look
+strange until you see it. In WS mode `D` would have to enter as `inputType` —
+`int8` in the reference config — and `int8` is far too narrow to hold a partial
+sum that has been accumulating over `k`.
+
+So in practice **WS code does not send `D` through the array at all.** It moves
+`D` into the *accumulator* SRAM, which is `int32` wide and has adders on its
+write port, and then tells `preload` to write `C` to that same accumulator
+address in *accumulate* mode. `A · B` lands on top of `D` inside the
+accumulator. The `compute` instruction's `rs2` — the `D` slot — is filled with
+`GARBAGE_ADDR` to say "nothing arrives this way".
+
+That is why the next section's eleven instructions include a third `mvin`
+targeting an accumulator address, and why `compute` is handed a constant that
+looks like a bug.
+
+## 3. The scalar version, and what it costs
 
 Here is the inner loop of `matmul_scalar` as `clang -O2` compiles it for RV64GC (unrolling
 disabled so the loop is readable). The RISC-V calling convention puts `N` in `a0` and the four
@@ -112,13 +212,37 @@ Reading the assembly, three things stand out:
 For N = 16, the per-`(i, j)` epilogue (clamp, store, reload the bias) and the two outer loops add
 another four thousand or so instructions on top of the 28,672 in the `k` loop. Call it 33,000.
 
-## 3. The same tile with the Gemmini macros
+## 4. The same tile with the Gemmini macros
 
 Here is the N = 16 case written against `gemmini.h`. The scratchpad and accumulator are
-row-addressed ([reference §7](Gemmini_ISA_reference.md)): one address is one row of `DIM` elements, so a 16 × 16 tile occupies 16
-consecutive rows. `A` goes to scratchpad rows 0–15, `B` to rows 16–31, and `D` goes straight into
-accumulator rows 0–15 so that the array can accumulate onto it. (The library puts `B` at the top
-of the scratchpad rather than at row 16; any free rows work.)
+**row-addressed** ([reference §7](Gemmini_ISA_reference.md)): one address names one row
+of `DIM` elements — not one element — so a 16 × 16 tile occupies 16 consecutive
+rows. (The library puts `B` at the top of the scratchpad rather than at row 16;
+any free rows work.)
+
+Four addresses are in play, and the top bits of a local address carry meaning:
+
+```
+  DRAM, host-visible                      Gemmini private memory
+  virtual addresses                       32-bit local addresses
+
+  ┌──────────────────┐                    ┌───────────────────────────────────┐
+  │ A   16×16 int8   │ ─ mvin  (f7 2) ──► │ 0x0000_0000  scratchpad rows 0-15 │
+  │ B   16×16 int8   │ ─ mvin2 (f7 1) ──► │ 0x0000_0010  scratchpad rows16-31 │
+  │ D   16×16 int32  │ ─ mvin3 (f7 14)──► │ 0x8000_0000  accumulator rows 0-15│
+  │ C   16×16 int8   │ ◄ mvout (f7 3) ─── │ 0x8000_0000  same accumulator rows│
+  └──────────────────┘                    └───────────────────────────────────┘
+                                             │
+                    bit 31 = 1 → accumulator ┘
+                    bit 30 = 1 → accumulate on write, not overwrite
+                                 (0x8000_0000 | 0x4000_0000 = 0xC000_0000)
+```
+
+`D` and `C` share one accumulator address. That is deliberate, and it is the §2
+trick made concrete: `mvin3` writes `D` there with bit 30 **clear** (overwrite),
+`preload` names the same rows with bit 30 **set** (accumulate) so `A · B` lands
+on top, and `mvout` reads the sum back with scaling and saturation applied on
+the way out.
 
 ```c
 #include "include/gemmini.h"
@@ -161,14 +285,45 @@ appear, and [the reference](Gemmini_ISA_reference.md) has a section for each:
 
 | Call | funct7 | What it does | Reference § |
 |---|---|---|---|
-| `gemmini_config_ex` | 0 | Dataflow (WS), activation, output shift, strides. Latched; write-only. | §8 |
-| `gemmini_extended3_config_ld` ×3 | 0 | DRAM stride and scale for `mvin`, `mvin2`, `mvin3` respectively (the `id` argument) | §8 |
-| `gemmini_config_st` | 0 | DRAM stride and `acc_scale` for `mvout` | §8 |
-| `gemmini_extended_mvin` / `mvin2` / `mvin3` | 2 / 1 / 14 | DMA a `rows × cols` block from a virtual address into a local address | §9 |
-| `gemmini_extended_preload` | 6 | Load the stationary operand (B in WS) into the array; name where C goes | §10 |
-| `gemmini_extended_compute_preloaded` | 4 | Stream A through the array against the preloaded B | §10 |
-| `gemmini_extended_mvout` | 3 | DMA a `rows × cols` block from a local address to a virtual address | §9 |
-| `gemmini_fence` | — | A plain RISC-V `fence`; Rocket holds it until Gemmini is idle | §12 |
+| `gemmini_config_ex` | 0 | Dataflow (WS), activation, output shift, strides. Latched; write-only. | ref §8 |
+| `gemmini_extended3_config_ld` ×3 | 0 | DRAM stride and scale for `mvin`, `mvin2`, `mvin3` respectively (the `id` argument) | ref §8 |
+| `gemmini_config_st` | 0 | DRAM stride and `acc_scale` for `mvout` | ref §8 |
+| `gemmini_extended_mvin` / `mvin2` / `mvin3` | 2 / 1 / 14 | DMA a `rows × cols` block from a virtual address into a local address | ref §9 |
+| `gemmini_extended_preload` | 6 | Load the stationary operand (B in WS) into the array; name where C goes | ref §10 |
+| `gemmini_extended_compute_preloaded` | 4 | Stream A through the array against the preloaded B | ref §10 |
+| `gemmini_extended_mvout` | 3 | DMA a `rows × cols` block from a local address to a virtual address | ref §9 |
+| `gemmini_fence` | — | A plain RISC-V `fence`; Rocket holds it until Gemmini is idle | ref §12 |
+
+Laid out as a pipeline, the eleven instructions and their dependencies:
+
+```
+  config_ex     dataflow = WS, no activation           ┐
+  config_ld ×3  DRAM stride + scale for each mvin port ├─ set ONCE,
+  config_st     DRAM stride + acc_scale for mvout      ┘  outside any loop
+        │
+        │   latched, write-only state — no readback, no save/restore
+        ▼
+  mvin   A ──► spad 0x0000_0000   16 B stride  ┐
+  mvin2  B ──► spad 0x0000_0010   16 B stride  ├─ three DMAs, independent
+  mvin3  D ──► acc  0x8000_0000   64 B stride  ┘  ports, may overlap
+        │
+        ▼
+  preload  rs1 = B @ spad 0x10     rs2 = C @ acc 0xC000_0000  (accumulate)
+        │       push weights into the array         name where C lands
+        ▼
+  compute  rs1 = A @ spad 0x00     rs2 = GARBAGE_ADDR
+        │       stream A through                    no D on this path
+        ▼
+  mvout    acc 0x8000_0000 ──► C in DRAM
+        │       bit 29 = 0, so scale by acc_scale then saturate to int8
+        ▼
+  fence    plain RISC-V fence; Rocket stalls until Gemmini's busy drops
+```
+
+Only the last instruction is a synchronization point. Everything above it is
+fire-and-forget: the host issues and moves on, and the reservation station
+sorts out the ordering. Nothing in this program reads a result back into a
+host register.
 
 Three details of the C worth noticing before we look underneath it:
 
@@ -184,7 +339,7 @@ Three details of the C worth noticing before we look underneath it:
   pass the true size, and the same eleven instructions handle it; that is the whole of Gemmini's
   tail handling.
 
-## 4. What a macro actually is
+## 5. What a macro actually is
 
 None of the calls above is a function. Each is a preprocessor macro that bottoms out in one
 inline-assembly statement. Here are the definitions the tile uses, verbatim from `gemmini.h`
@@ -259,14 +414,39 @@ strings `"2"` and `"6"`, and the two operand expressions are plain 64-bit intege
 no packing at all. Its second operand, and both operands of the `preload`, are shifts and ORs the
 compiler must now turn into RV64I instructions. That asymmetry is the subject of [reference §18](Gemmini_ISA_reference.md).
 
-## 5. The same function in assembly
+## 6. The same function in assembly
 
 The compiler turns `tile_matmul_ws` into 44 instructions (`clang -O2`, RV64GC): the eleven
 `.insn r` lines that are the Gemmini instructions, a `fence`, a `ret`, and 31 lines of ordinary
-RV64I building the 64-bit operand values that §4 left as C expressions. The listing below is
+RV64I building the 64-bit operand values that §5 left as C expressions. The listing below is
 abridged to the parts discussed underneath it: the three `config_ld` and the `config_st` are
 elided, and each operand build is placed next to the instruction that consumes it. The complete,
 unreordered compiler output is the appendix.
+
+Five 64-bit constants do almost all the work. Decode them once and the listing
+reads straight through:
+
+| Constant | rows | cols | local address | Meaning |
+|---|---|---|---|---|
+| `0x0010_0010_0000_0000` | 16 | 16 | `0x0000_0000` | scratchpad row 0 — `A` |
+| `0x0010_0010_0000_0010` | 16 | 16 | `0x0000_0010` | scratchpad row 16 — `B` |
+| `0x0010_0010_8000_0000` | 16 | 16 | `0x8000_0000` | accumulator row 0, **overwrite** |
+| `0x0010_0010_C000_0000` | 16 | 16 | `0xC000_0000` | accumulator row 0, **accumulate** |
+| `0x0010_0010_FFFF_FFFF` | 16 | 16 | `0xFFFF_FFFF` | `GARBAGE_ADDR` |
+
+`0x0010_0010` in the top half is just `rows = 16` in `[63:48]` and `cols = 16`
+in `[47:32]`, which is why every operand looks alike: **only the low 32 bits
+carry the interesting information.** The two `config_ex` operands are the
+exception, and they are built once:
+
+| Constant | Field breakdown |
+|---|---|
+| `0x3F80_0000_0001_0004` | `acc_scale = 1.0f` `[63:32]`, `A_stride = 1` `[31:16]`, `dataflow = WS` `<<2`, selector `00` |
+| `0x0001_0000_0000_0000` | `C_stride = 1` `[63:48]`, `sys_shift = 0` |
+
+`0x3F80_0000` is the IEEE-754 single-precision encoding of `1.0f`, which is why
+the compiler builds it as `127 << 23` — watch for `li a7, 127` followed by a
+shift in the listing below.
 
 ```asm
 # void tile_matmul_ws(const elem_t *A, const elem_t *B, const acc_t *D, elem_t *C)
@@ -312,7 +492,7 @@ Reading the assembly, three things stand out:
 - **Every Gemmini instruction has the same shape.** Eleven `.insn r CUSTOM_3, 0x3, F, x0, rs1, rs2`
   lines, and the only things that vary are `F`, the `funct7` that selects the operation
   ([reference appendix A](Gemmini_ISA_reference.md)), and two register *numbers*. There is no immediate, no address, no size in the
-  instruction word. All of that is in the two registers it names, and Gemmini slices it out (§6.3).
+  instruction word. All of that is in the two registers it names, and Gemmini slices it out (§7.3).
 - **The rest is constant-building.** In the full listing, thirty-one RV64I instructions serve
   eleven Gemmini instructions, and not one of them computes anything about the matrices: they are
   `lui`, `slli`, `addi` and `or` assembling 64-bit bit-fields. The compiler is clever about it.
@@ -327,7 +507,7 @@ Reading the assembly, three things stand out:
   pass into `rs1` fields untouched, Gemmini's own DMA and TLB fetch through them ([reference §5](Gemmini_ISA_reference.md)), and the
   `fence` is the only point where the host waits.
 
-Here is one of those words as the assembler encodes it, the `mvin` of A, so that §6.3's picture has
+Here is one of those words as the assembler encodes it, the `mvin` of A, so that §7.3's picture has
 a concrete instance. `a0` is `x10` and `t0` is `x5`:
 
 ```
@@ -343,7 +523,7 @@ a concrete instance. `a0` is `x10` and `t0` is `x5`:
 
 `llvm-objdump` prints this word as `<unknown>`. Nothing in the RISC-V toolchain knows what it
 means; only Gemmini's decoder does, and what it decodes is `funct7` plus two register numbers
-whose *contents* are a pointer (`0x0000_0000_8FF3_2100`, if A lives where the reference's examples put it) and `0x0010_0010_0000_0000` (rows, cols, local address). §6 follows those two
+whose *contents* are a pointer (`0x0000_0000_8FF3_2100`, if A lives where the reference's examples put it) and `0x0010_0010_0000_0000` (rows, cols, local address). §7 follows those two
 values from the register file into the accelerator.
 
 Count what was executed for the 16 × 16 × 16 tile:
@@ -378,13 +558,13 @@ worked trace of the same tile with the library's addresses is [reference §14](G
 
 ---
 
-## 6. Where the instruction and its operands live
+## 7. Where the instruction and its operands live
 
-§1–§5 followed one 16 × 16 tile from C source to the assembler's output. This section
+§1–§6 followed one 16 × 16 tile from C source to the assembler's output. This section
 explains the mechanism behind each of those `.insn` lines: where the instruction lives, where its operands
 live, and how they reach the accelerator.
 
-### 6.1 The short version
+### 7.1 The short version
 
 Three things, three places. Everything else in this section elaborates these:
 
@@ -399,7 +579,7 @@ That third point resolves the puzzle the ISA tables create: the instruction is 3
 address is *also* 32 bits, and they seem not to fit. They don't need to — they sit at different
 depths.
 
-### 6.2 The five stages
+### 7.2 The five stages
 
 ```
  C source  ->  compiler  ->  .text  ->  CPU regfile  ->  RoCC port  ->  Gemmini
@@ -417,7 +597,7 @@ depths.
 | **RoCC port** | Rocket reads the regfile and sends a `RoCCCommand` bundle of *values* |
 | **Gemmini** | Decodes `funct7`, slices the 64-bit operands into fields |
 
-### 6.3 Zooming in
+### 7.3 Zooming in
 
 Follow one `mvin` down through the levels. Each box is a field of the box above it:
 
@@ -460,10 +640,79 @@ pointer. [Reference §18](Gemmini_ISA_reference.md) covers why some operands are
 
 ---
 
+---
+
+## 8. Past one tile
+
+Everything so far was one `DIM × DIM × DIM` tile. Real matrices are bigger, and
+the array still only does 16 × 16. So you tile: split `C = A · B + D` into
+`I × J` output tiles, each summed over `K` steps of the `k` dimension.
+
+For a 64 × 64 matmul with `DIM = 16`, that is `I = J = K = 4`, so **64
+`preload`/`compute` pairs** plus their moves. Three things change, and each one
+costs:
+
+**1. Addresses stop being constants.** In §6 the compiler built
+`0x0010_0010_0000_0000` once and reused it for both the `mvin` and the
+`compute`. In a loop, the scratchpad address is `base + (i*K + k)*DIM` — a
+multiply and an add per operand, per instruction, and the shift-and-OR to pack
+it back into bits `[31:0]`. What was free becomes 12–20 host instructions per
+pair ([reference §18](Gemmini_ISA_reference.md)).
+
+**2. Edge tiles.** If the matrix is not a multiple of `DIM`, the last tile in
+each direction is short. This costs nothing structurally — you pass the true
+`rows`/`cols` and the same instructions handle it, which is the point made at
+the end of §1 — but the counts become runtime values, so they too must be
+packed rather than folded into a constant.
+
+**3. Accumulation across `k`.** The `k = 0` tile writes `C` with bit 30 clear
+(overwrite); every `k > 0` tile writes the same accumulator rows with bit 30 set
+(accumulate). And since `B` is resident across the inner loop, subsequent
+`preload`s pass `GARBAGE_ADDR` to keep the weights in place. Both are *address*
+changes; no opcode changes. The library's real loop
+(`sp_tiled_matmul_ws` in `gemmini.h`) is reproduced in
+[reference §10](Gemmini_ISA_reference.md).
+
+### The CISC escape hatch
+
+Those 64 pairs plus their address arithmetic run to roughly a thousand host
+instructions — for a matmul the array itself could retire in a few hundred
+cycles. That imbalance is what `loop_ws` exists to fix:
+
+```
+  loop_ws_config_bounds    I, J, K and padding
+  loop_ws_config_addrs_AB  &A, &B
+  loop_ws_config_addrs_DC  &D, &C
+  loop_ws_config_strides_AB
+  loop_ws_config_strides_DC
+  loop_ws                  ← trigger: run the whole tiled matmul
+```
+
+Six instructions, and hardware does the tiling — `LoopMatmul.scala` generates
+the same `mvin`/`preload`/`compute`/`mvout` stream, double-buffers the tiles,
+and throttles itself against the reservation station's occupancy so loads and
+matmuls overlap. It adds no expressive power; it removes host instruction
+traffic and schedules better than most hand-written loops.
+
+The five `config` instructions latch into registers and the sixth fires. They
+must be issued as an uninterrupted group — there is no tag, just one latched
+register set ([reference §11](Gemmini_ISA_reference.md)).
+
+### Where to go next
+
+| You want | Go to |
+|---|---|
+| The encoding of any instruction here | [reference §8–§12](Gemmini_ISA_reference.md) |
+| The full WS tiling loop as the library writes it | [reference §10](Gemmini_ISA_reference.md) |
+| The loop instructions in detail | [reference §11](Gemmini_ISA_reference.md) |
+| What the packing actually costs | [reference §18](Gemmini_ISA_reference.md) |
+| Traps, in a list | [reference §23](Gemmini_ISA_reference.md) |
+| The hardware underneath | upstream [`README.md`](../../generators/gemmini/README.md) |
+
 ## Appendix — `tile_matmul_ws`, complete assembly
 
-The unabridged `clang -O2` output for the function of §3, in the compiler's own order, with
-comments added. §5 discusses it.
+The unabridged `clang -O2` output for the function of §4, in the compiler's own order, with
+comments added. §6 discusses it.
 
 ```asm
 # void tile_matmul_ws(const elem_t *A, const elem_t *B, const acc_t *D, elem_t *C)
