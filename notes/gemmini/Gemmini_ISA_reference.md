@@ -6,10 +6,10 @@ top of that reservation, what Gemmini puts inside its slice of the encoding
 space, and what the C toolchain and the RoCC hardware contract underneath it
 guarantee.
 
-This is document 3 of 3. Read [`Gemmini_Overview.md`](Gemmini_Overview.md) for
-the hardware, and [`Gemmini_ISA_tutorial.md`](Gemmini_ISA_tutorial.md) for one
-matmul walked from C to the encoded instruction word. This document assumes
-both and does not repeat them.
+This is document 2 of 2. Read [`Gemmini_ISA_tutorial.md`](Gemmini_ISA_tutorial.md)
+first for one matmul walked from C to the encoded instruction word; this
+document assumes it and does not repeat it. For the hardware underneath, read
+the upstream [`README.md`](../../generators/gemmini/README.md).
 
 **Provenance.** rocket-chip `tile/LazyRoCC.scala`, `rocket/IDecode.scala`,
 `rocket/CustomInstructions.scala`, `rocket/RocketCore.scala`;

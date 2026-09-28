@@ -6,10 +6,12 @@ macros expand to, and as the assembly the compiler finally emits. By the end you
 should be able to read any line of Gemmini assembly and know what it does, even
 though no disassembler will tell you.
 
-This is document 2 of 3. [`Gemmini_Overview.md`](Gemmini_Overview.md) covers the
-hardware this runs on; [`Gemmini_ISA_reference.md`](Gemmini_ISA_reference.md) is the
-instruction-by-instruction reference, and every cross-reference below points
-into it. Read this one start to finish; reach for the reference afterwards.
+This is document 1 of 2. [`Gemmini_ISA_reference.md`](Gemmini_ISA_reference.md)
+is the instruction-by-instruction reference, and every cross-reference below
+points into it. Read this one start to finish; reach for the reference
+afterwards. For the hardware underneath, read the upstream
+[`README.md`](../../generators/gemmini/README.md) —
+its Architecture and Major Components sections, with the figures.
 
 **Provenance.** `ucb-bar/gemmini-rocc-tests` `include/gemmini.h` (**dev**
 branch) and `ibm/rocc-software` `src/xcustom.h`. Assembly is `clang -O2` for
