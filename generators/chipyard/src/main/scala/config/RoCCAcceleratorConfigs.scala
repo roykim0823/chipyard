@@ -15,3 +15,10 @@ class ReRoCCTestConfig extends Config(
   new chipyard.config.WithAccumulatorRoCC ++                   // rerocc tile0 is accum
   new freechips.rocketchip.rocket.WithNHugeCores(1) ++
   new chipyard.config.AbstractConfig)
+
+// Rocket (BigCore) + Gemmini with defaultConfig parameters (16x16, Dataflow.BOTH)
+class GemminiPaperRocketConfig extends Config(
+  new gemmini.LeanGemminiConfig(gemmini.GemminiConfigs.defaultConfig) ++
+  new chipyard.config.WithSystemBusWidth(128) ++
+  new freechips.rocketchip.rocket.WithNBigCores(1) ++
+  new chipyard.config.AbstractConfig)
