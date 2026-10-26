@@ -1,4 +1,4 @@
-# Rocket + Gemmini on VCU118 with Chipyard: Hands-on Tutorial (Draft)
+# Rocket + Gemmini on VCU118 with Chipyard: Hands-on Tutorial
 
 - **Author:** Min Jung
 - **Paths:** All paths are relative to the Chipyard root (`chipyard/`).
