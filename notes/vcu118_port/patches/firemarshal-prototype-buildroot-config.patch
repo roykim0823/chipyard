@@ -1,0 +1,31 @@
+diff --git a/boards/prototype/base-workloads/br-base/buildroot-config b/boards/prototype/base-workloads/br-base/buildroot-config
+index 9aaf4a2..dd28c6c 100644
+--- a/boards/prototype/base-workloads/br-base/buildroot-config
++++ b/boards/prototype/base-workloads/br-base/buildroot-config
+@@ -6,7 +6,12 @@ BR2_RISCV_64=y
+ BR2_RISCV_ABI_LP64D=y
+ BR2_ARCH_IS_64=y
+ 
+-BR2_TARGET_GENERIC_ROOT_PASSWD="fpga"
++# Root password is "fpga", given pre-hashed as MD5. On nodisk builds FireMarshal's
++# own static busybox (wlutil/busybox-config) overwrites the rootfs busybox, and it
++# lacks CONFIG_USE_BB_CRYPT_SHA, so buildroot's default sha-256 hash ($5$) can never
++# match and login always fails. MD5 ($1$) is always supported. This buildroot has no
++# md5 choice for PASSWD_METHOD, hence the pre-hashed value ("$" doubled for make).
++BR2_TARGET_GENERIC_ROOT_PASSWD="$$1$$fpgaSalt$$2EdT7bIn4qGRGNre0YQlq/"
+ 
+ BR2_GENERATE_LOCALE=""
+ BR2_PACKAGE_E2FSPROGS=y
+@@ -33,6 +38,12 @@ BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y
+ BR2_TOOLCHAIN_EXTERNAL_CUSTOM_GLIBC=y
+ BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX="$(ARCH)-unknown-linux-gnu"
+ BR2_TOOLCHAIN_EXTERNAL_CXX=y
++# Buildroot requires an exact match between these flags and what the external
++# toolchain actually provides (toolchain/helpers.mk): "available but not
++# selected" is a hard error. $(RISCV) ships gfortran and libgomp, so both must
++# be declared here. The firechip board's config already sets them.
++BR2_TOOLCHAIN_EXTERNAL_FORTRAN=y
++BR2_TOOLCHAIN_EXTERNAL_OPENMP=y
+ BR2_TOOLCHAIN_EXTERNAL_GLIBC=y
+ BR2_TOOLCHAIN_EXTERNAL_HAS_SSP=y
+ # BR2_TOOLCHAIN_EXTERNAL_INET_RPC is not set

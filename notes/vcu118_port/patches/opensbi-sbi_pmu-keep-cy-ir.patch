@@ -1,0 +1,21 @@
+diff --git a/lib/sbi/sbi_pmu.c b/lib/sbi/sbi_pmu.c
+index 154dbda..a6ee5bc 100644
+--- a/lib/sbi/sbi_pmu.c
++++ b/lib/sbi/sbi_pmu.c
+@@ -422,6 +422,16 @@ static int pmu_ctr_stop_hw(uint32_t cidx)
+ 	if (cidx >= num_hw_ctrs || cidx == 1)
+ 		return SBI_EINVAL;
+ 
++	/*
++	 * Keep mcycle (CY) and minstret (IR) free-running, as they are after
++	 * hart init. Linux stops every counter at boot and legacy
++	 * perf_user_access=2 only opens scounteren, so user-mode rdcycle and
++	 * rdinstret would otherwise read frozen values. perf still counts
++	 * correctly because it writes the initial value on every start.
++	 */
++	if (cidx == 0 || cidx == 2)
++		return 0;
++
+ 	if (!__test_bit(cidx, &mctr_inhbt)) {
+ 		__set_bit(cidx, &mctr_inhbt);
+ 		csr_write(CSR_MCOUNTINHIBIT, mctr_inhbt);
