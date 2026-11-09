@@ -1,21 +1,33 @@
 diff --git a/lib/sbi/sbi_pmu.c b/lib/sbi/sbi_pmu.c
-index 154dbda..a6ee5bc 100644
+index 154dbda..f77230f 100644
 --- a/lib/sbi/sbi_pmu.c
 +++ b/lib/sbi/sbi_pmu.c
-@@ -422,6 +422,16 @@ static int pmu_ctr_stop_hw(uint32_t cidx)
+@@ -419,12 +419,28 @@ static int pmu_ctr_stop_hw(uint32_t cidx)
+ 	mctr_inhbt = csr_read(CSR_MCOUNTINHIBIT);
+ 
+ 	/* Make sure the counter index lies within the range and is not TM bit */
  	if (cidx >= num_hw_ctrs || cidx == 1)
  		return SBI_EINVAL;
  
 +	/*
-+	 * Keep mcycle (CY) and minstret (IR) free-running, as they are after
-+	 * hart init. Linux stops every counter at boot and legacy
-+	 * perf_user_access=2 only opens scounteren, so user-mode rdcycle and
-+	 * rdinstret would otherwise read frozen values. perf still counts
-+	 * correctly because it writes the initial value on every start.
++	 * The counter index is its mcountinhibit bit: 0 = CY (mcycle),
++	 * 1 = TM (time, rejected above), 2 = IR (minstret),
++	 * 3..31 = mhpmcounter3..31.
++	 *
++	 * Keep CY and IR free-running, as they are after hart init: report
++	 * them as stopped (return 0) without setting their inhibit bit.
++	 * Linux stops every counter at boot and legacy perf_user_access=2
++	 * only opens scounteren, so user-mode rdcycle and rdinstret would
++	 * otherwise read frozen values. perf still counts correctly because
++	 * it writes the initial value on every start.
 +	 */
 +	if (cidx == 0 || cidx == 2)
 +		return 0;
 +
++	/* Any other counter: stop it by setting its mcountinhibit bit. */
  	if (!__test_bit(cidx, &mctr_inhbt)) {
  		__set_bit(cidx, &mctr_inhbt);
  		csr_write(CSR_MCOUNTINHIBIT, mctr_inhbt);
+ 		return 0;
+ 	} else
+ 		return SBI_EALREADY_STOPPED;
