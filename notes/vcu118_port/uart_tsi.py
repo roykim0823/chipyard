@@ -26,10 +26,7 @@ Exit codes: 0 success, 1 program exited non-zero, 2 port/response error,
 
 import argparse, os, struct, sys, time
 
-try:
-    import serial
-except ImportError:
-    sys.exit("pyserial 이 필요합니다:  pip install pyserial")
+import serial
 
 _WINDOWS = sys.platform.startswith("win")
 
@@ -53,17 +50,34 @@ class Tsi:
     """
 
     def __init__(self, port, baud, timeout=10.0):
-        self.ser = serial.Serial(port=port, baudrate=baud, bytesize=8,
+        # No port in the constructor: pyserial then leaves it closed until open().
+        self.ser = serial.Serial(baudrate=baud, bytesize=8,
                                  parity=serial.PARITY_NONE, stopbits=1,
                                  timeout=timeout, rtscts=False, dsrdtr=False,
                                  xonxoff=False)
+        self.ser.port = port
+
+    def open(self):
+        self.ser.open()
 
     def close(self):
+        if not self.ser.is_open:
+            return
         # Flush before closing so the last write (e.g. MSIP) is actually sent.
-        try: self.ser.flush()
-        except Exception: pass
-        try: self.ser.close()
-        except Exception: pass
+        # A failed flush is only reported, so that it does not replace the
+        # exception that is already propagating when close() runs from __exit__.
+        try:
+            self.ser.flush()
+        except serial.SerialException as e:
+            sys.stderr.write(f"[uart_tsi.py] flush failed on close: {e}\n")
+        finally:
+            self.ser.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def _drain(self, timeout=30.0):
         """Wait until the output queue is empty.
@@ -77,8 +91,8 @@ class Tsi:
         while self.ser.out_waiting:  # finer than pyserial's 50 ms (actual resolution depends on OS/Python)
             if time.time() - t0 > timeout:
                 raise TimeoutError(
-                    f"출력 큐가 {timeout:.0f}초 동안 비지 않습니다 "
-                    f"(out_waiting={self.ser.out_waiting}). 포트 상태를 확인하세요.")
+                    f"output queue did not drain in {timeout:.0f} s "
+                    f"(out_waiting={self.ser.out_waiting}). Check the port.")
             time.sleep(0.0005)
 
     def _write_raw(self, data):
@@ -100,8 +114,8 @@ class Tsi:
             got = self.ser.read(need - len(buf))
             if not got:
                 raise TimeoutError(
-                    f"타깃이 응답하지 않습니다 ({len(buf)}/{need} 바이트). "
-                    "보드 리셋, 포트, baud 를 확인하세요.")
+                    f"no response from target ({len(buf)}/{need} bytes). "
+                    "Check board reset, port and baud rate.")
             buf += got
         return list(struct.unpack("<%dI" % n, bytes(buf)))
 
@@ -169,9 +183,9 @@ class Elf:
         with open(path, "rb") as f:
             self.b = f.read()
         if self.b[:4] != b"\x7fELF" or self.b[4] != 2:
-            raise ValueError(f"{path}: 64비트 ELF 가 아닙니다")
+            raise ValueError(f"{path}: not a 64-bit ELF")
         if self.b[5] != 1:
-            raise ValueError(f"{path}: 리틀엔디언이 아닙니다")
+            raise ValueError(f"{path}: not little-endian")
         (self.entry, phoff, shoff) = struct.unpack_from("<QQQ", self.b, 24)
         (phentsize, phnum, shentsize, shnum) = struct.unpack_from("<HHHH", self.b, 54)
 
@@ -235,7 +249,7 @@ def load(tsi, elf):
     def prog(cur):
         pct = 100.0 * (loaded[0] + cur) / total if total else 100.0
         el = time.time() - t0
-        sys.stdout.write(f"\r  로딩 {pct:5.1f}%  ({el:.0f}초)")
+        sys.stdout.write(f"\r  loading {pct:5.1f}%  ({el:.0f} s)")
         sys.stdout.flush()
 
     def zero_fill(addr, n):
@@ -249,17 +263,17 @@ def load(tsi, elf):
 
     for addr, payload, bss_addr, bss_len in segs:
         if payload:
-            print(f"  세그먼트 0x{addr:x}-0x{addr+len(payload):x}  {human(len(payload))}")
+            print(f"  segment 0x{addr:x}-0x{addr+len(payload):x}  {human(len(payload))}")
             tsi.write(addr, payload, progress=prog)
             loaded[0] += len(payload)
             sys.stdout.write("\n")
         if not bss_len:
             continue
-        print(f"  .bss    0x{bss_addr:x}-0x{bss_addr+bss_len:x}  {human(bss_len)} 0으로")
+        print(f"  .bss    0x{bss_addr:x}-0x{bss_addr+bss_len:x}  {human(bss_len)} zero-filled")
         zero_fill(bss_addr, bss_len)
         loaded[0] += bss_len
         sys.stdout.write("\n")
-    print(f"  로딩 완료 {human(total)} / {time.time()-t0:.1f}초")
+    print(f"  loaded {human(total)} in {time.time()-t0:.1f} s")
 
 
 def htif_loop(tsi, tohost, fromhost, stall_warn=30.0):
@@ -278,7 +292,7 @@ def htif_loop(tsi, tohost, fromhost, stall_warn=30.0):
     def idle(msg):
         nonlocal warned
         if not warned and time.time() - last_event > stall_warn:
-            sys.stderr.write(f"\n[uart_tsi.py] {stall_warn:.0f}초째 진전 없음 — {msg}\n")
+            sys.stderr.write(f"\n[uart_tsi.py] no progress for {stall_warn:.0f} s: {msg}\n")
             sys.stderr.flush()
             warned = True
 
@@ -291,10 +305,10 @@ def htif_loop(tsi, tohost, fromhost, stall_warn=30.0):
                     tsi.write_u64(fromhost, pending.pop(0))
                     last_event, warned = time.time(), False
                 else:
-                    idle(f"fromhost=0x{fh:x} 가 그대로입니다. "
-                         "타깃이 우리 응답을 안 가져갑니다.")
+                    idle(f"fromhost=0x{fh:x} is unchanged; "
+                         "the target is not consuming our response.")
             else:
-                idle("tohost=0 입니다. 타깃이 아무 요청도 안 냅니다.")
+                idle("tohost=0; the target is not sending any request.")
             continue
         tsi.write_u64(tohost, 0)
         last_event, warned = time.time(), False
@@ -327,70 +341,87 @@ def htif_loop(tsi, tohost, fromhost, stall_warn=30.0):
             pending.append(1)
         else:
             # No response: an unexpected fromhost would break the handshake.
-            sys.stderr.write(f"\n[uart_tsi.py] 미구현 HTIF: dev={dev} cmd={cmd}\n")
+            sys.stderr.write(f"\n[uart_tsi.py] unsupported HTIF: dev={dev} cmd={cmd}\n")
+
+
+def aligned_addr(s):
+    """argparse type for --read. A ValueError from int() is reported by
+    argparse itself as "invalid aligned_addr value"."""
+    addr = int(s, 0)
+    if addr % 4:
+        raise argparse.ArgumentTypeError(f"address must be 4-byte aligned: {s}")
+    return addr
+
+
+def read_word(tsi, addr):
+    print(f"  [0x{addr:x}] = 0x{struct.unpack('<I', tsi.read_chunk(addr, 4))[0]:08x}")
+    return 0
+
+
+def run_elf(tsi, elf):
+    """Load the ELF, wake hart0 and serve HTIF until the program exits."""
+    load(tsi, elf)
+
+    th, fh = elf.symbols.get("tohost"), elf.symbols.get("fromhost")
+    # The BootROM parks hart0 in WFI until its MSIP is set, then jumps to
+    # DRAM_BASE (0x80000000). elf.entry is only printed, not used, so the
+    # binary must start at 0x80000000.
+    print("  waking hart0")
+    tsi.set_msip()
+    if not th or not fh:
+        print("  no tohost/fromhost symbols; exiting without HTIF.")
+        print("  (The ELF was built without HTIF. Watch the board's UART console for output.)")
+        return 0
+    print(f"  HTIF attached  tohost=0x{th:x} fromhost=0x{fh:x}\n")
+    code = htif_loop(tsi, th, fh)
+    print(f"\n  exit code {code}")
+    return 0 if code == 0 else 1
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="UART-TSI 로 ELF 를 보드 DRAM 에 올리고 실행 결과(HTIF)를 출력합니다")
-    ap.add_argument("binary", nargs="?", help="올릴 ELF (--read 를 쓸 때는 생략)")
+        description="Load an ELF into board DRAM over UART-TSI and print its HTIF output")
+    ap.add_argument("binary", nargs="?", help="ELF to load (omit with --read)")
     ap.add_argument("--tty", required=True, help="Windows: COM3 / Linux: /dev/ttyUSB1")
     ap.add_argument("--baud", type=int, default=115200,
-                    help="비트스트림의 WithUARTTSIClient(initBaudRate=...) 값과 같아야 함 "
-                         "(기본 115200, 예: 921600)")
-    ap.add_argument("--read", metavar="ADDR",
-                    help="ADDR 의 32비트 워드를 읽고 종료. 로딩·기동은 하지 않음. "
-                         "보드 연결 확인용 (ADDR 는 4바이트 정렬)")
+                    help="must match WithUARTTSIClient(initBaudRate=...) in the bitstream "
+                         "(default 115200, e.g. 921600)")
+    ap.add_argument("--read", metavar="ADDR", type=aligned_addr,
+                    help="read the 32-bit word at ADDR and exit, without loading or booting. "
+                         "Use it to check the link (ADDR must be 4-byte aligned)")
     a = ap.parse_args()
 
-    # Validate arguments before opening the port.
-    if a.read:
+    # Validate arguments and parse the ELF before opening the port.
+    if a.read is None and not a.binary:
+        ap.error("binary or --read is required")
+
+    print(f"uart_tsi.py  port {a.tty}  {a.baud} baud")
+    elf = None
+    if a.read is None:
         try:
-            rd_addr = int(a.read, 0)
-        except ValueError:
-            ap.error(f"주소 형식이 잘못됐습니다: {a.read!r}")
-        if rd_addr % 4:
-            ap.error(f"주소는 4바이트 정렬이어야 합니다: {a.read}")
-    elif not a.binary:
-        ap.error("binary 또는 --read 가 필요합니다")
-
-    print(f"uart_tsi.py  포트 {a.tty}  {a.baud} baud")
-    try:
-        tsi = Tsi(a.tty, a.baud)
-    except serial.SerialException as e:
-        print(f"  포트를 열 수 없습니다: {e}")
-        print("  포트 이름을 확인하고, 다른 프로그램(터미널 등)이 포트를 잡고 있지 않은지 보세요.")
-        return 2
-    try:
-        if a.read:
-            print(f"  [0x{rd_addr:x}] = 0x{struct.unpack('<I', tsi.read_chunk(rd_addr, 4))[0]:08x}")
-            return 0
-
-        elf = Elf(a.binary)
+            elf = Elf(a.binary)
+        except (OSError, ValueError) as e:
+            ap.error(str(e))
         print(f"  {os.path.basename(a.binary)}  entry 0x{elf.entry:x}")
-        load(tsi, elf)
 
-        th, fh = elf.symbols.get("tohost"), elf.symbols.get("fromhost")
-        # The BootROM parks hart0 in WFI until its MSIP is set, then jumps to
-        # DRAM_BASE (0x80000000). elf.entry is only printed, not used, so the
-        # binary must start at 0x80000000.
-        print("  hart0 기동")
-        tsi.set_msip()
-        if not th or not fh:
-            print("  tohost/fromhost 심볼이 없습니다 — HTIF 없이 종료합니다.")
-            print("  (HTIF 없이 빌드된 ELF 입니다. 출력은 보드의 UART 콘솔로 보세요.)")
-            return 0
-        print(f"  HTIF 부착  tohost=0x{th:x} fromhost=0x{fh:x}\n")
-        code = htif_loop(tsi, th, fh)
-        print(f"\n  종료 코드 {code}")
-        return 0 if code == 0 else 1
-    except KeyboardInterrupt:
-        print("\n  중단됨"); return 130
-    except TimeoutError as e:
-        print(f"\n  {e}"); return 2
-    finally:
-        tsi.close()
+    tsi = Tsi(a.tty, a.baud)
+    try:
+        tsi.open()
+    except serial.SerialException as e:
+        print(f"  cannot open port: {e}")
+        print("  Check the port name and that no other program (e.g. a terminal) holds it.")
+        return 2
+    with tsi:
+        try:
+            return read_word(tsi, a.read) if a.read is not None else run_elf(tsi, elf)
+        except TimeoutError as e:
+            print(f"\n  {e}")
+            return 2
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\n  interrupted")
+        sys.exit(130)
