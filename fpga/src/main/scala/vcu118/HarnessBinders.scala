@@ -26,7 +26,7 @@ class WithUART extends HarnessBinder({
 // overlay's BundleBridgeSource rather than hand-placing pins.  Both bundles are
 // two-wire -- UARTParams.includeFourWire defaults to false on the peripheral
 // UART and on the TSI UART alike -- so the connection is structurally exact.
-class WithVCU118UARTTSI extends HarnessBinder({
+class WithUARTTSI extends HarnessBinder({
   case (th: VCU118FPGATestHarnessImp, port: UARTTSIPort, chipId: Int) => {
     th.vcu118Outer.io_uart_bb.bundle <> port.io.uart
   }
@@ -39,7 +39,7 @@ class WithVCU118UARTTSI extends HarnessBinder({
 // (bottom row, positions 3 and 4) -- NOT 7 and 8, which carry PMOD0_4/PMOD0_5,
 // i.e. the SDIO DAT1/DAT2 pins.  J52 is level-shifted to 3.3V by U41 (UG1224 p.89), so a
 // stock 3.3V Pmod USB-UART attaches directly.
-class WithVCU118PMODUART(rxdPin: String = "AT15", txdPin: String = "AT16") extends HarnessBinder({
+class WithPMODUART(rxdPin: String = "AT15", txdPin: String = "AT16") extends HarnessBinder({
   case (th: VCU118FPGATestHarnessImp, port: UARTPort, chipId: Int) => {
     val harnessIO = IO(chiselTypeOf(port.io)).suggestName("uart_console")
     harnessIO <> port.io
@@ -54,7 +54,7 @@ class WithVCU118PMODUART(rxdPin: String = "AT15", txdPin: String = "AT16") exten
 /*** SPI ***/
 class WithSPISDCard extends HarnessBinder({
   case (th: VCU118FPGATestHarnessImp, port: SPIPort, chipId: Int) => {
-    th.vcu118Outer.io_spi_bb.bundle <> port.io
+    th.vcu118Outer.io_spi_bb.get.bundle <> port.io
   }
 })
 

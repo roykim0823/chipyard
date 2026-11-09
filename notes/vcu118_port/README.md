@@ -112,9 +112,9 @@ Chipyard Configuration → RTL Elaboration → Vivado Implementation → Bitstre
 | Binaries | `*-baremetal` | `*-linux` (dynamically linked, glibc) |
 | Switching tests | Re-send every ELF (resnet50: 125.5 MB) | Write the SD once, pick tests from the shell |
 | Use | HW functional checks, performance baseline (no virtual-address/TLB overhead) | Real-environment checks, regression over many tests |
-| Bitstream config | `GemminiVCU118Config50` (`WithVCU118Tweaks`) | `GemminiVCU118SDConfig50` (`WithVCU118SDTweaks`) |
+| Bitstream config | `GemminiVCU118UARTTSIConfig` (`WithVCU118UARTTSITweaks`) | `GemminiVCU118Config` (`WithVCU118Tweaks`) |
 
-Because of the SD card, the two experiments use **different bitstreams** (3.2). The SPI-SD and BootROM (sdboot) in 1.2 apply only to the SD-card version (`WithVCU118SDTweaks`).
+Because of the SD card, the two experiments use **different bitstreams** (3.2). The SPI-SD and BootROM (sdboot) in 1.2 apply only to the SD-card version (`WithVCU118Tweaks`).
 
 ---
 
@@ -266,8 +266,8 @@ Already included in the provided bitstreams. Needed only if you reproduce the bi
 | Fragment | Role | Defined in |
 |---|---|---|
 | `WithFPGAFrequency(50)` | sbus/pbus/cbus/fbus/mbus and harness clocks at 50 MHz | `fpga/src/main/scala/vcu118/Configs.scala` |
-| `WithVCU118Tweaks` | **No-SD-card version.** Programs loaded over UART-TSI; console on PMOD J52 | `fpga/src/main/scala/vcu118/Configs.scala` |
-| `WithVCU118SDTweaks` | **SD-card version.** Programs loaded from the SD card by sdboot; console on the on-board USB-UART | `fpga/src/main/scala/vcu118/Configs.scala` |
+| `WithVCU118UARTTSITweaks` | **No-SD-card version.** Programs loaded over UART-TSI; console on PMOD J52 | `fpga/src/main/scala/vcu118/Configs.scala` |
+| `WithVCU118Tweaks` | **SD-card version.** Programs loaded from the SD card by sdboot; console on the on-board USB-UART | `fpga/src/main/scala/vcu118/Configs.scala` |
 | `WithSystemBusWidth(128)` | 128-bit system bus | `generators/chipyard/src/main/scala/config/fragments/SubsystemFragments.scala:17` |
 | `WithNBigCores(1)` / `WithNHugeCores(1)` | One Rocket core (Big: 16 KB L1, Huge: 32 KB L1) | `generators/rocket-chip/src/main/scala/rocket/Configs.scala:62` |
 
@@ -275,25 +275,25 @@ Already included in the provided bitstreams. Needed only if you reproduce the bi
 
 | File | Class | Description |
 |---|---|---|
-| `fpga/src/main/scala/vcu118/Configs.scala` | `WithVCU118Tweaks` | No-SD-card version (comparison table below) |
-| | `WithVCU118SDTweaks` | SD-card version (comparison table below) |
-| | `WithNoSDCardPeripherals` | Keeps only the UART at `0x64000000`, removes SPI, assigns PMOD J52 to JTAG (`VCU118ShellPMOD = "JTAG"`) |
+| `fpga/src/main/scala/vcu118/Configs.scala` | `WithVCU118UARTTSITweaks` | No-SD-card version (comparison table below) |
+| | `WithVCU118Tweaks` | SD-card version (comparison table below) |
+| | `WithUARTTSIPeripherals` | Keeps only the UART at `0x64000000`, removes SPI, assigns PMOD J52 to JTAG (`VCU118ShellPMOD = "JTAG"`) |
 | | `WithNoSDBootSystemModifications` | `WithSystemModifications` without the sdboot BootROM — uses the default Chipyard BootROM (WFI, then wait for MSIP) |
-| | `GemminiVCU118Config50`, `GemminiVCU118SDConfig50` | VCU118 configs used in the experiments (3.2) |
-| `fpga/src/main/scala/vcu118/HarnessBinders.scala` | `WithVCU118UARTTSI` | Connects UART-TSI to the on-board USB-UART (AW25/BB21) |
-| | `WithVCU118PMODUART` | Connects the console UART to PMOD J52 pins 9/10 (AT15/AT16, LVCMOS18) |
-| `generators/chipyard/src/main/scala/config/RoCCAcceleratorConfigs.scala` | `GemminiPaperRocketConfig` | Rocket (BigCore) + Gemmini `defaultConfig` SoC (3.2) |
+| | `GemminiVCU118UARTTSIConfig`, `GemminiVCU118Config` | VCU118 configs used in the experiments (3.2) |
+| `fpga/src/main/scala/vcu118/HarnessBinders.scala` | `WithUARTTSI` | Connects UART-TSI to the on-board USB-UART (AW25/BB21) |
+| | `WithPMODUART` | Connects the console UART to PMOD J52 pins 9/10 (AT15/AT16, LVCMOS18) |
+| `generators/chipyard/src/main/scala/config/RoCCAcceleratorConfigs.scala` | `LeanGemminiDefaultParamsRocketConfig` | Rocket (BigCore) + Gemmini `defaultConfig` SoC (3.2) |
 
 #### Comparing the two Tweaks
 
-| Item | `WithVCU118Tweaks` (no SD) | `WithVCU118SDTweaks` (with SD) |
+| Item | `WithVCU118UARTTSITweaks` (no SD) | `WithVCU118Tweaks` (with SD) |
 |---|---|---|
 | Used in | Bare-metal (chapter 6) | Linux (chapter 7) |
 | Program loading | UART-TSI — the host writes directly into DDR | SD sector 34 → DDR (7.1) |
 | BootROM | Default Chipyard BootROM (WFI, then wait for MSIP) — `WithNoSDBootSystemModifications` | sdboot — `WithSystemModifications` (builds `fpga/src/main/resources/vcu118/sdboot` during elaboration) |
-| TSI | `WithUARTTSIClient` (921600 baud) + `WithVCU118UARTTSI` — on-board USB-UART | None (`SerialTLKey => Nil`) |
-| Console UART | PMOD J52 pins 9/10 (`WithVCU118PMODUART`) | On-board USB-UART (`WithUART`) |
-| SD card (SPI) | None (`WithNoSDCardPeripherals`) | `WithSPISDCard`, SPI at `0x64001000` (`WithDefaultPeripherals`) |
+| TSI | `WithUARTTSIClient` (921600 baud) + `WithUARTTSI` — on-board USB-UART | None (`SerialTLKey => Nil`) |
+| Console UART | PMOD J52 pins 9/10 (`WithPMODUART`) | On-board USB-UART (`WithUART`) |
+| SD card (SPI) | None (`WithUARTTSIPeripherals`) | `WithSPISDCard`, SPI at `0x64001000` (`WithDefaultPeripherals`) |
 | PMOD J52 used for | JTAG + console UART (`VCU118ShellPMOD = "JTAG"`) | SD card (`VCU118ShellPMOD = "SDIO"`) |
 | Debug JTAG location | PMOD J52 | FMC_J2 |
 | Extra hardware | None — bare-metal output comes back over the TSI link via HTIF. A 3.3 V Pmod USB-UART if you want the PMOD J52 console | PMOD MicroSD adapter + SD card |
@@ -304,12 +304,12 @@ Why the UARTs are placed this way: the only USB-UART wired to the FPGA fabric is
 
 ### 3.2 Gemmini Default Config Used in the Experiments
 
-The SoC (`GemminiPaperRocketConfig`) is the same; only the VCU118 harness (Tweaks) differs depending on the SD card. Bare-metal uses the no-SD version and Linux uses the SD version.
+The SoC (`LeanGemminiDefaultParamsRocketConfig`) is the same; only the VCU118 harness (Tweaks) differs depending on the SD card. Bare-metal uses the no-SD version and Linux uses the SD version.
 
 | Item | Bare-metal (chapter 6) | Linux (chapter 7) |
 |---|---|---|
-| VCU118 config | `GemminiVCU118Config50` | `GemminiVCU118SDConfig50` |
-| Harness | `WithVCU118Tweaks` (no SD card) | `WithVCU118SDTweaks` (with SD card) |
+| VCU118 config | `GemminiVCU118UARTTSIConfig` | `GemminiVCU118Config` |
+| Harness | `WithVCU118UARTTSITweaks` (no SD card) | `WithVCU118Tweaks` (with SD card) |
 | CPU | 1 Rocket core (BigCore) | ← |
 | Gemmini | `defaultConfig` — 16×16, Dataflow BOTH (WS, OS) | ← |
 | Clock | 50 MHz | ← |
@@ -317,21 +317,21 @@ The SoC (`GemminiPaperRocketConfig`) is the same; only the VCU118 harness (Tweak
 
 ```scala
 // Bare-metal (UART-TSI)
-class GemminiVCU118Config50 extends Config(
+class GemminiVCU118UARTTSIConfig extends Config(
   new WithFPGAFrequency(50) ++
-  new WithVCU118Tweaks ++
-  new chipyard.GemminiPaperRocketConfig
+  new WithVCU118UARTTSITweaks ++
+  new chipyard.LeanGemminiDefaultParamsRocketConfig
 )
 
 // Linux (SD boot)
-class GemminiVCU118SDConfig50 extends Config(
+class GemminiVCU118Config extends Config(
   new WithFPGAFrequency(50) ++
-  new WithVCU118SDTweaks ++
-  new chipyard.GemminiPaperRocketConfig
+  new WithVCU118Tweaks ++
+  new chipyard.LeanGemminiDefaultParamsRocketConfig
 )
 
 // Common SoC
-class GemminiPaperRocketConfig extends Config(
+class LeanGemminiDefaultParamsRocketConfig extends Config(
   new gemmini.LeanGemminiConfig(gemmini.GemminiConfigs.defaultConfig) ++
   new chipyard.config.WithSystemBusWidth(128) ++
   new freechips.rocketchip.rocket.WithNBigCores(1) ++
@@ -384,8 +384,8 @@ Commands to elaborate the configs into RTL and DTS (for the full bitstream, see 
 ```bash
 source env.sh
 cd fpga
-make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118Config50 verilog     # Bare-metal
-make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118SDConfig50 verilog   # Linux
+make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118UARTTSIConfig verilog     # Bare-metal
+make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118Config verilog   # Linux
 ```
 - vcu118 defaults in `fpga/Makefile`: `CONFIG_PACKAGE=chipyard.fpga.vcu118`, `MODEL=VCU118FPGATestHarness`. If your config lives in another package, also pass `CONFIG_PACKAGE`.
 - `WithFPGAFrequency(50)` must be to the left of the Tweaks. The leftmost fragment wins, so it overrides the 100 MHz setting inside the Tweaks with 50 MHz.
@@ -409,8 +409,8 @@ git apply notes/vcu118_port/patches/sdboot-48MiB-300kHz.patch
 ```bash
 source env.sh
 cd fpga
-make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118Config50 bitstream     # for bare-metal
-make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118SDConfig50 bitstream   # for Linux
+make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118UARTTSIConfig bitstream     # for bare-metal
+make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118Config bitstream   # for Linux
 ```
 - Even if you skip the elaboration in 3.5, the `bitstream` target starts from elaboration.
 - Each config produces its own bitstream (the `<build>` directories in 4.2 are named by config).
@@ -438,7 +438,7 @@ The only outputs needed for the hands-on part are the **two bitstreams (`.bit`)*
 ### 4.3 Checking the Elaboration Results
 #### Device Tree (`*.dts`)
 
-For default Gemmini with BigCore. The SPI (SD) entries apply only to the SD-card version (`WithVCU118SDTweaks`).
+For default Gemmini with BigCore. The SPI (SD) entries apply only to the SD-card version (`WithVCU118Tweaks`).
 
 | Item | Expected | Observed |
 |---|---|---|
@@ -476,7 +476,7 @@ default ↔ lean is the exception: no code references the header difference (`AC
 - Target part: `xcvu9p-flga2104-2L-e` (`part_fpga` in `fpga/fpga-shells/xilinx/vcu118/tcl/board.tcl`) — confirmed by `Device : xcvu9p-flga2104-2L-e` in `<build>/obj/report/utilization.txt` ✅
 
 ### 4.5 Implementation Results
-The results below are for the Linux version (`GemminiVCU118SDConfig50`).
+The results below are for the Linux version (`GemminiVCU118Config`).
 
 #### Timing
 
@@ -543,8 +543,10 @@ After downloading, compare the sha256 to make sure the files are correct (PowerS
 
 | Experiment | Config | File | sha256 |
 |---|---|---|---|
-| Bare-metal | `GemminiVCU118Config50` | `GemminiVCU118Config50.bit` | `e639974f9d6704e630a3a06c5fed3c7c32657cdee6f0f095071e3dd573630cc3` |
-| Linux | `GemminiVCU118SDConfig50` | `GemminiVCU118SDConfig50-sd48-spi300k.bit` (`PAYLOAD_SIZE_B` 48 MiB, `SPI_CLK` 300 kHz — 7.4) | `57ecad2ce6e52da59956e88011337a6f458b50d5da9efd6d2eb1892fbb18c6a1` |
+| Bare-metal | `GemminiVCU118UARTTSIConfig` | `GemminiVCU118Config50.bit` | `e639974f9d6704e630a3a06c5fed3c7c32657cdee6f0f095071e3dd573630cc3` |
+| Linux | `GemminiVCU118Config` | `GemminiVCU118SDConfig50-sd48-spi300k.bit` (`PAYLOAD_SIZE_B` 48 MiB, `SPI_CLK` 300 kHz — 7.4) | `57ecad2ce6e52da59956e88011337a6f458b50d5da9efd6d2eb1892fbb18c6a1` |
+
+The file names keep the config names the bitstreams were built under: `GemminiVCU118Config50` is now `GemminiVCU118UARTTSIConfig`, and `GemminiVCU118SDConfig50` is now `GemminiVCU118Config`. Only the names changed; the hardware is the same.
 
 Use `/` in Tcl paths.
 ```tcl
@@ -631,7 +633,7 @@ python .\uart_tsi.py --tty <COM> --baud 921600 <ELF>
 | `종료 코드` | exit code |
 | `tohost/fromhost 심볼이 없습니다` | no tohost/fromhost symbols |
 
-Bare-metal experiments use the `GemminiVCU118Config50` bitstream from 3.2 (`WithVCU118Tweaks`, no SD).
+Bare-metal experiments use the `GemminiVCU118UARTTSIConfig` bitstream from 3.2 (`WithVCU118UARTTSITweaks`, no SD).
 
 ### 6.4 Building the Test Binaries
 
@@ -844,7 +846,7 @@ The `로딩` (loading) line updates in place while loading; the log above shows 
 
 ## 7. Linux Hands-on
 
-Linux experiments use the `GemminiVCU118SDConfig50` bitstream from 3.2 (`WithVCU118SDTweaks`, SD-card version). The chapter 6 bitstream is the no-SD version, so program the Linux bitstream again with 5.2.
+Linux experiments use the `GemminiVCU118Config` bitstream from 3.2 (`WithVCU118Tweaks`, SD-card version). The chapter 6 bitstream is the no-SD version, so program the Linux bitstream again with 5.2.
 
 ### 7.0 Hands-on Flow
 

@@ -17,7 +17,7 @@ class ReRoCCTestConfig extends Config(
   new chipyard.config.AbstractConfig)
 
 // Rocket (BigCore) + Gemmini with defaultConfig parameters (16x16, Dataflow.BOTH)
-class GemminiPaperRocketConfig extends Config(
+class LeanGemminiDefaultParamsRocketConfig extends Config(
   new gemmini.LeanGemminiConfig(gemmini.GemminiConfigs.defaultConfig) ++
   new chipyard.config.WithSystemBusWidth(128) ++
   new freechips.rocketchip.rocket.WithNBigCores(1) ++

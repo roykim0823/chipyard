@@ -68,10 +68,18 @@ class VCU118FPGATestHarness(override implicit val p: Parameters) extends VCU118S
 
   /*** SPI ***/
 
-  // 1st SPI goes to the VCU118 SDIO port
+  // 1st SPI goes to the VCU118 SDIO port, when the PMOD is wired for SDIO at
+  // all.  With VCU118ShellPMOD != "SDIO" the shell leaves `sdio` as None and
+  // dp(SPIOverlayKey) is empty, so placing it unconditionally would kill
+  // elaboration rather than simply omitting the card.
 
-  val io_spi_bb = BundleBridgeSource(() => (new SPIPortIO(dp(PeripherySPIKey).head)))
-  dp(SPIOverlayKey).head.place(SPIDesignInput(dp(PeripherySPIKey).head, io_spi_bb))
+  val io_spi_bb = if (pmod_is_sdio) {
+    val bb = BundleBridgeSource(() => (new SPIPortIO(dp(PeripherySPIKey).head)))
+    dp(SPIOverlayKey).head.place(SPIDesignInput(dp(PeripherySPIKey).head, bb))
+    Some(bb)
+  } else {
+    None
+  }
 
   /*** DDR ***/
 
