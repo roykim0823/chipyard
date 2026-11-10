@@ -245,7 +245,8 @@ Already included in the provided bitstreams. Needed only if you reproduce the bi
 | File | Change |
 |---|---|
 | `fpga/src/main/scala/vcu118/Configs.scala` | Adds custom configs (3.1) |
-| `fpga/src/main/scala/vcu118/HarnessBinders.scala` | Adds custom configs (3.1) |
+| `fpga/src/main/scala/vcu118/HarnessBinders.scala` | Adds harness binders `WithUARTTSI` and `WithPMODUART` (3.1) |
+| `fpga/src/main/scala/vcu118/TestHarness.scala` | Places the SPI-SD overlay only when PMOD J52 is wired for SDIO, so the no-SD config elaborates (3.1) |
 | `generators/chipyard/src/main/scala/config/RoCCAcceleratorConfigs.scala` | Adds custom configs (3.1) |
 | `fpga/src/main/resources/vcu118/sdboot/sd.c` | `PAYLOAD_SIZE_B` 30 → 48 MiB, `SPI_CLK` 25 MHz → 300 kHz (7.4). Patch: `notes/vcu118_port/patches/sdboot-48MiB-300kHz.patch` |
 
@@ -255,7 +256,7 @@ Already included in the provided bitstreams. Needed only if you reproduce the bi
 |---|---|
 | devcontainer packages | Install `file` and `cpio` in the container (2.2 Step 1) |
 | `software/firemarshal/boards/prototype/base-workloads/br-base/buildroot-config` (tracked in the firemarshal submodule) | Root password set as an MD5 hash; adds `BR2_TOOLCHAIN_EXTERNAL_FORTRAN=y` / `OPENMP=y` (+12/−1) — 7.2 Step 0. Patch: `notes/vcu118_port/patches/firemarshal-prototype-buildroot-config.patch` |
-| `software/firemarshal/boards/default/firmware/opensbi/lib/sbi/sbi_pmu.c` (opensbi submodule inside firemarshal) | `pmu_ctr_stop_hw()` no longer stops the CY(0)·IR(2) counters (+10) — 7.2 Step 0. Patch: `notes/vcu118_port/patches/opensbi-sbi_pmu-keep-cy-ir.patch` |
+| `software/firemarshal/boards/default/firmware/opensbi/lib/sbi/sbi_pmu.c` (opensbi submodule inside firemarshal) | `pmu_ctr_stop_hw()` no longer stops the CY(0)·IR(2) counters (+16) — 7.2 Step 0. Patch: `notes/vcu118_port/patches/opensbi-sbi_pmu-keep-cy-ir.patch` |
 
 ---
 
@@ -619,19 +620,14 @@ python .\uart_tsi.py --tty <COM> --baud 921600 <ELF>
 
 ⚠️ **Caution**: `--baud` defaults to 115200. It must match the board's UART-TSI baud rate (921600), so always pass `--baud 921600`.
 
-`uart_tsi.py` prints its status messages in Korean. The expected outputs in this document show them as-is; their meanings:
+Exit codes of `uart_tsi.py`:
 
-| Message | Meaning |
+| Code | Meaning |
 |---|---|
-| `포트` | port |
-| `세그먼트` | segment |
-| `로딩 xx% (N초)` | loading xx% (N seconds) |
-| `.bss ... 0으로` | .bss ... zero-filled |
-| `로딩 완료` | load complete |
-| `hart0 기동` | hart0 started |
-| `HTIF 부착` | HTIF attached |
-| `종료 코드` | exit code |
-| `tohost/fromhost 심볼이 없습니다` | no tohost/fromhost symbols |
+| `0` | The program exited with 0, or `--read` succeeded |
+| `1` | The program exited with a non-zero value (printed as `exit code N`) |
+| `2` | Bad arguments, `cannot open port: …` (wrong port name, or another program such as a terminal holds it), or `no response from target (…)` |
+| `130` | Interrupted with Ctrl+C |
 
 Bare-metal experiments use the `GemminiVCU118UARTTSIConfig` bitstream from 3.2 (`WithVCU118UARTTSITweaks`, no SD).
 
@@ -686,7 +682,7 @@ Copy each step's output ELFs to any folder on Windows and give that path when ru
 | `$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks/*.riscv` | `firmware\baremetal\riscv-tests\` |
 | `generators/gemmini/software/gemmini-rocc-tests/build/bareMetalC/*-baremetal`, `build/imagenet/*-baremetal` | `firmware\baremetal\gemmini\` |
 
-⚠️ **Caution**: Copy the ELF itself — not the `.dump` file, and do not `strip` it. uart_tsi.py looks up `tohost`/`fromhost` in the ELF symbol table; without them it only prints `tohost/fromhost 심볼이 없습니다` (no tohost/fromhost symbols) and exits with no test output.
+⚠️ **Caution**: Copy the ELF itself — not the `.dump` file, and do not `strip` it. uart_tsi.py looks up `tohost`/`fromhost` in the ELF symbol table; without them it only prints `no tohost/fromhost symbols; exiting without HTIF.` and exits with no test output.
 
 ### 6.5 Labs
 
@@ -699,12 +695,12 @@ python .\uart_tsi.py --tty <COM> --baud 921600 --read 0x80000000
 ```
 **Expected output**:
 ```text
-uart_tsi.py  포트 COM4  921600 baud
+uart_tsi.py  port COM4  921600 baud
   [0x80000000] = 0x00050433
 ```
 The value itself is meaningless. It changes with the DDR contents after power-up or the last program loaded.
 
-✅ **Checkpoint**: A value is printed without `TimeoutError` (exit code 2).
+✅ **Checkpoint**: A value is printed. If the target does not answer, `uart_tsi.py` prints `no response from target (…)` and exits with code 2.
 
 #### Lab 1. Rocket only
 **Goal**: Confirm the Rocket core and HTIF output work, without Gemmini.
@@ -714,42 +710,42 @@ python .\uart_tsi.py --tty <COM> --baud 921600 .\firmware\baremetal\riscv-tests\
 ```
 **Expected output**:
 ```text
-uart_tsi.py  포트 COM4  921600 baud
+uart_tsi.py  port COM4  921600 baud
   hello.riscv  entry 0x80000000
-  세그먼트 0x80000000-0x80001ed8  7.7 KB
-  로딩  90.1%  (0초)
-  .bss    0x80001ed8-0x80002240  0.9 KB 0으로
-  로딩 100.0%  (0초)
-  로딩 완료 8.6 KB / 0.1초
-  hart0 기동
-  HTIF 부착  tohost=0x80001e00 fromhost=0x80001e08
+  segment 0x80000000-0x80001ed8  7.7 KB
+  loading  90.1%  (0 s)
+  .bss    0x80001ed8-0x80002240  0.9 KB zero-filled
+  loading 100.0%  (0 s)
+  loaded 8.6 KB in 0.1 s
+  waking hart0
+  HTIF attached  tohost=0x80001e00 fromhost=0x80001e08
 
 Hello world from core 0, a rocket
 
-  종료 코드 0
+  exit code 0
 ```
 ```text
-uart_tsi.py  포트 COM4  921600 baud
+uart_tsi.py  port COM4  921600 baud
   dhrystone.riscv  entry 0x80000000
-  세그먼트 0x80000000-0x800001cc  0.4 KB
-  로딩   2.2%  (0초)
-  세그먼트 0x80001000-0x80003824  10.0 KB
-  로딩  51.0%  (0초)
-  .bss    0x80003824-0x80006070  10.1 KB 0으로
-  로딩 100.0%  (0초)
-  로딩 완료 20.6 KB / 0.3초
-  hart0 기동
-  HTIF 부착  tohost=0x80001000 fromhost=0x80001040
+  segment 0x80000000-0x800001cc  0.4 KB
+  loading   2.2%  (0 s)
+  segment 0x80001000-0x80003824  10.0 KB
+  loading  51.0%  (0 s)
+  .bss    0x80003824-0x80006070  10.1 KB zero-filled
+  loading 100.0%  (0 s)
+  loaded 20.6 KB in 0.3 s
+  waking hart0
+  HTIF attached  tohost=0x80001000 fromhost=0x80001040
 
 Microseconds for one run through Dhrystone: 449
 Dhrystones per Second:                      2222
 mcycle = 225007
 minstret = 186031
 
-  종료 코드 0
+  exit code 0
 ```
 
-✅ **Checkpoint**: `종료 코드 0` (exit code 0)
+✅ **Checkpoint**: `exit code 0`
 
 #### Lab 2. Basic Gemmini operations
 **Goal**: Confirm a minimal Gemmini round trip and matmul work.
@@ -760,17 +756,17 @@ python .\uart_tsi.py --tty <COM> --baud 921600 .\firmware\baremetal\gemmini\tile
 ```
 **Expected output** (`tiled_matmul_ws`):
 ```text
-uart_tsi.py  포트 COM4  921600 baud
+uart_tsi.py  port COM4  921600 baud
   tiled_matmul_ws-baremetal  entry 0x80000000
-  세그먼트 0x80000000-0x800001c8  0.4 KB
-  로딩   0.6%  (0초)
-  세그먼트 0x80001000-0x80003450  9.1 KB
-  로딩  12.9%  (0초)
-  .bss    0x80003450-0x800134a0  64.1 KB 0으로
-  로딩 100.0%  (1초)
-  로딩 완료 73.6 KB / 1.0초
-  hart0 기동
-  HTIF 부착  tohost=0x80001000 fromhost=0x80001040
+  segment 0x80000000-0x800001c8  0.4 KB
+  loading   0.6%  (0 s)
+  segment 0x80001000-0x80003450  9.1 KB
+  loading  12.9%  (0 s)
+  .bss    0x80003450-0x800134a0  64.1 KB zero-filled
+  loading 100.0%  (1 s)
+  loaded 73.6 KB in 1.0 s
+  waking hart0
+  HTIF attached  tohost=0x80001000 fromhost=0x80001040
 
 MAT_DIM_I: 64
 MAT_DIM_J: 64
@@ -780,10 +776,10 @@ Cycles taken: 2412
 Starting slow CPU matmul
 Cycles taken: 3227178
 
-  종료 코드 0
+  exit code 0
 ```
 
-✅ **Checkpoint**: `종료 코드 0` (exit code 0)
+✅ **Checkpoint**: `exit code 0`
 
 #### Lab 3. DNN workloads
 ```powershell
@@ -797,17 +793,17 @@ See 6.6 for how to read the output.
 `resnet50-baremetal` run log:
 
 ```text
-uart_tsi.py  포트 <COM>  921600 baud
+uart_tsi.py  port <COM>  921600 baud
   resnet50-baremetal  entry 0x80000000
-  세그먼트 0x80000000-0x800001c8  0.4 KB
-  로딩   0.0%  (0초)
-  세그먼트 0x80001000-0x8190e504  25.1 MB
-  로딩  20.0%  (…초)
-  .bss    0x8190e504-0x87d820d0  100.5 MB 0으로
-  로딩 100.0%  (…초)
-  로딩 완료 125.5 MB / …초
-  hart0 기동
-  HTIF 부착  tohost=0x80001000 fromhost=0x80001040
+  segment 0x80000000-0x800001c8  0.4 KB
+  loading   0.0%  (0 s)
+  segment 0x80001000-0x8190e504  25.1 MB
+  loading  20.0%  (… s)
+  .bss    0x8190e504-0x87d820d0  100.5 MB zero-filled
+  loading 100.0%  (… s)
+  loaded 125.5 MB in … s
+  waking hart0
+  HTIF attached  tohost=0x80001000 fromhost=0x80001040
 
 conv_1 cycles: ...
 matmul_2 cycles: ...
@@ -822,17 +818,17 @@ Res add cycles: 11688823 (11%)
 Other cycles: 141275 (0%)
 PASS
 
-  종료 코드 0
+  exit code 0
 ```
-The `로딩` (loading) line updates in place while loading; the log above shows it as it looks at the end of each stage (`…초` varies per run).
+The `loading` line updates in place while loading; the log above shows it as it looks at the end of each stage (`… s` varies per run).
 
 | Part | Meaning |
 |---|---|
 | Segment 1 (0x80000000~) | First `PT_LOAD` (R E). `.text.init` — boot code, where hart0 starts executing |
 | Segment 2 | The part of the second `PT_LOAD` with actual file contents (filesz). `.tohost`, `.text`, `.rodata` (weights), etc. |
 | .bss | The memsz − filesz range. Not in the file, so it is zero-filled (activation buffers, etc.) |
-| hart0 기동 (hart0 started) | CLINT MSIP write → Rocket starts executing |
-| HTIF 부착 (HTIF attached) | Starts polling the `tohost` / `fromhost` addresses found in the ELF symbol table |
+| waking hart0 | CLINT MSIP write → Rocket starts executing |
+| HTIF attached | Starts polling the `tohost` / `fromhost` addresses found in the ELF symbol table |
 | Cycle breakdown | Sum of 7 instrumented regions. Not the whole program's runtime |
 | PASS / exit code | Classification of 4 images compared with the expected answers / HTIF exit value |
 
@@ -897,8 +893,8 @@ git -C software/firemarshal/boards/default/firmware/opensbi diff --stat
 ```text
  boards/prototype/base-workloads/br-base/buildroot-config | 13 ++++++++++++-
  1 file changed, 12 insertions(+), 1 deletion(-)
- lib/sbi/sbi_pmu.c | 10 ++++++++++
- 1 file changed, 10 insertions(+)
+ lib/sbi/sbi_pmu.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
 ```
 
 | Patch | Change | Reason |
@@ -1102,21 +1098,28 @@ Below are the changes from the defaults and why. Apply `notes/vcu118_port/patche
 
 | Item | Default | Changed to | Reason |
 |---|---|---|---|
-| `SPI_CLK` | 25 MHz | **300 kHz** | At 25 MHz, SD initialization does not get past the CMD stage (9.1) |
+| `SPI_CLK` | 25 MHz | **300 kHz** | At 25 MHz, SD initialization does not get past the CMD stage (9.1). 300 kHz is within the 100–400 kHz range the SD spec requires during initialization |
 | `PAYLOAD_SIZE_B` | 30 MiB | **48 MiB** | The image with 56 tests + mobilenet + resnet50 (42.8 MB) exceeds 30 MiB |
 
 `fpga/src/main/resources/vcu118/sdboot/sd.c` (after applying `notes/vcu118_port/patches/sdboot-48MiB-300kHz.patch`):
 ```c
-//#define PAYLOAD_SIZE_B (30 << 20) // default: 30MiB
+// Total payload in B
+// 48 MiB instead of the 30 MiB default: the gemmini-all nodisk flat image is
+// 42,813,448 B (85% of 48 MiB).
 #define PAYLOAD_SIZE_B (48 << 20)
 ...
-// #define SPI_CLK 	25000 // default: 25 MHz
-#define SPI_CLK 	300                // kHz
+// SPI SCLK frequency, in kHz
+// The default is 25000 (25 MHz High Speed mode), but with our SD card the init
+// commands do not complete at 25 MHz. 300 kHz is within the 100-400 kHz range
+// the SD spec requires during initialization. sd_poweron() and copy() share
+// SPI_DIV, so the payload copy also runs at 300 kHz.
+#define SPI_CLK 	300
+...
 #define SPI_DIV 	(((F_CLK * 1000) / SPI_CLK) / 2 - 1)
 ```
 
 - `F_CLK` is the pbus clock (MHz) passed in at elaboration. At 50 MHz, `SPI_DIV` = 50000 / 300 / 2 − 1 = **82**, so the actual SCK = 50 MHz / (2 × 83) ≈ **301 kHz**.
-- `sd_poweron()` (initialization) and `sd_copy()` (payload copy) use the same `SPI_DIV`, so **the copy also runs at 300 kHz**.
+- `sd_poweron()` (initialization) and `copy()` (payload copy) use the same `SPI_DIV`, so **the copy also runs at 300 kHz**.
 - Loading an image of 30 MiB or less with the new BootROM is fine. Conversely, **loading a 48 MiB-class image with a 30 MiB BootROM leaves the tail unloaded and boot fails silently**.
 
 ⚠️ **Caution** (when regenerating): These values are part of the BootROM, so **the Linux bitstream must be regenerated** after changing them. Changing only `sd.c` does not trigger re-elaboration (see the caution in 4.1).
