@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""uart_tsi.py - load an ELF into board DRAM over UART-TSI and run it.
+"""uart_tsi.py - VCU118 board host over UART-TSI: run a bare-metal ELF, or
+ask the dual-boot ROM to boot Linux from the SD card.
 
 A portable (Windows/Linux) reimplementation of the host side of
 generators/testchipip/uart_tsi/uart_tsi. The original is Linux-only: it uses
@@ -10,18 +11,37 @@ Only dependency: pyserial.
 
   pip install pyserial
 
-Find the port:
+On the dual-boot bitstream (GemminiVCU118DualBootConfig) the on-board
+USB-UART carries both the console and UART-TSI, and the boot ROM waits (no
+timeout) for the host to pick a path:
+
+  bare-metal : load an ELF, set MSIP and serve HTIF until the program exits
+  Linux (SD) : --boot-linux writes BOOT_MAGIC_LINUX to the boot mailbox.
+               The ROM acks, closes the TSI gate (GPIO[0]) and prints INIT
+               on the console, then copies the SD payload and boots it.
+               INIT is the ack this script waits for; after that the line
+               belongs to the console (picocom -b 115200 <port>; the ROM and
+               OpenSBI still print at 921600, Linux switches to 115200).
+
+The ROM decides once per reset: press CPU_RESET before every run. On a
+TSI-only bitstream (GemminiVCU118UARTTSIConfig) the bare-metal and --read
+modes work the same way; --boot-linux does not apply there.
+
+Find the port (CP2105 "Standard" COM port):
   Windows: Device Manager -> Ports (COM & LPT)   e.g. COM3
   Linux:   ls /dev/ttyUSB*                        e.g. /dev/ttyUSB1
 
   # 1. Check the link first: read one word, no load, no boot
-  python uart_tsi.py --tty COM3 --baud 921600 --read 0x80000000
+  python uart_tsi.py --tty /dev/ttyUSB1 --baud 921600 --read 0x80000000
 
   # 2. Bare-metal program (console output comes back over HTIF)
-  python uart_tsi.py --tty COM3 --baud 921600 mvin_mvout-baremetal
+  python uart_tsi.py --tty /dev/ttyUSB1 --baud 921600 mvin_mvout-baremetal
 
-Exit codes: 0 success, 1 program exited non-zero, 2 port/response error,
-130 interrupted (Ctrl+C).
+  # 3. Linux from the SD card (dual-boot bitstream); exits once INIT is seen
+  python uart_tsi.py --tty /dev/ttyUSB1 --baud 921600 --boot-linux
+
+Exit codes: 0 success, 1 program exited non-zero, 2 port/response error
+(or no INIT), 130 interrupted (Ctrl+C).
 """
 
 import argparse, os, struct, sys, time
@@ -36,12 +56,21 @@ CHUNK_MAX_BYTES = 1024                         # tsi_t::chunk_max_size()
 BATCH_MAX_BYTES = 64 * 1024                    # bytes per serial write (see Tsi.write)
 MSIP_BASE = 0x2000000                          # tsi_t::reset()
 
-# ── HTIF ──────────────────────────────────────────────────────────────
+# ── HTIF (Host-Target Interface): tohost/fromhost syscall proxy ───────
 SYS_write, SYS_exit = 64, 93
+
+# ── Dual boot (fpga/src/main/resources/vcu118/sdboot/sd.c, -DDUALBOOT) ─
+BOOT_MAILBOX = 0x8FFFF800                      # above the boot ROM stack top
+BOOT_MAGIC_LINUX = 0x4C494E5558534421          # "LINUXSD!"
+BOOT_ACK_TEXT = b"INIT"                        # first console line on the SD path
 
 
 class Tsi:
-    """TSI over UART. Words are 32-bit little-endian.
+    """TSI (Tethered Serial Interface) over UART.
+
+    TSI is Chipyard's simple host-to-SoC link: the host sends memory read and
+    write commands, which the SoC's TSIToTileLink bridge turns into TileLink
+    accesses (no CPU involvement). Words are 32-bit little-endian.
 
     On Windows, every write must wait until the driver's output queue is
     empty (_drain); otherwise back-to-back writes can lose bytes.
@@ -378,10 +407,52 @@ def run_elf(tsi, elf):
     return 0 if code == 0 else 1
 
 
+def boot_linux(tsi, mailbox, boot_timeout, retry=1.0):
+    """Ask the dual-boot ROM for the SD/Linux path.
+
+    The ROM clears the mailbox once when it starts, so a flag written before
+    that is lost: rewrite it every `retry` seconds until INIT shows up.
+    The ack cannot be read back over TSI, because the ROM closes the TSI gate
+    right after acking; INIT on the shared console line is the ack instead.
+    TSI writes have no response packet, so nothing but console text comes back.
+    """
+    t0 = time.time()
+    seen = bytearray()
+    tries = 0
+    saved_timeout = tsi.ser.timeout
+    tsi.ser.timeout = 0.05
+    try:
+        while time.time() - t0 < boot_timeout:
+            tsi.write_u64(mailbox, BOOT_MAGIC_LINUX)
+            tries += 1
+            t_try = time.time()
+            while time.time() - t_try < retry:
+                got = tsi.ser.read(256)
+                if not got:
+                    continue
+                seen += got
+                if BOOT_ACK_TEXT in seen:
+                    el = time.time() - t0
+                    print(f"  boot ROM took the SD path after ~{el:.0f} s "
+                          f"({tries} request{'s' if tries > 1 else ''})")
+                    tail = seen[seen.index(BOOT_ACK_TEXT):]
+                    sys.stdout.write(tail.decode("latin1", "replace"))
+                    sys.stdout.write("\n")
+                    print("  the line now belongs to the console; open a terminal on the same port")
+                    return 0
+                del seen[:-len(BOOT_ACK_TEXT)]   # keep only what could start a split "INIT"
+        print(f"  no INIT within {boot_timeout:.0f} s ({tries} requests). Check that the board was"
+              " just reset, that this is the dual-boot bitstream, and the baud rate.")
+        return 2
+    finally:
+        tsi.ser.timeout = saved_timeout
+
+
 def main():
     ap = argparse.ArgumentParser(
-        description="Load an ELF into board DRAM over UART-TSI and print its HTIF output")
-    ap.add_argument("binary", nargs="?", help="ELF to load (omit with --read)")
+        description="Load an ELF into board DRAM over UART-TSI and print its HTIF output, "
+                    "or (--boot-linux) make the dual-boot ROM boot Linux from the SD card")
+    ap.add_argument("binary", nargs="?", help="ELF to load (omit with --read / --boot-linux)")
     ap.add_argument("--tty", required=True, help="Windows: COM3 / Linux: /dev/ttyUSB1")
     ap.add_argument("--baud", type=int, default=115200,
                     help="must match WithUARTTSIClient(initBaudRate=...) in the bitstream "
@@ -389,22 +460,35 @@ def main():
     ap.add_argument("--read", metavar="ADDR", type=aligned_addr,
                     help="read the 32-bit word at ADDR and exit, without loading or booting. "
                          "Use it to check the link (ADDR must be 4-byte aligned)")
+    ap.add_argument("--boot-linux", action="store_true",
+                    help="dual-boot bitstream: ask the boot ROM to boot Linux from the SD card, "
+                         "exit once it prints INIT")
+    ap.add_argument("--boot-mailbox", metavar="ADDR", type=aligned_addr, default=BOOT_MAILBOX,
+                    help=f"boot mailbox address (default 0x{BOOT_MAILBOX:x}, must match sd.c)")
+    ap.add_argument("--boot-timeout", type=float, default=30.0,
+                    help="seconds to keep requesting the Linux path (default 30; "
+                         "raise it a lot in RTL simulation)")
+    ap.add_argument("--boot-retry", type=float, default=1.0,
+                    help="seconds between mailbox writes while waiting for INIT (default 1)")
+    ap.add_argument("--timeout", type=float, default=10.0,
+                    help="seconds to wait for a TSI response (default 10; raise it in RTL simulation)")
     a = ap.parse_args()
 
     # Validate arguments and parse the ELF before opening the port.
-    if a.read is None and not a.binary:
-        ap.error("binary or --read is required")
+    modes = (a.read is not None) + bool(a.binary) + a.boot_linux
+    if modes != 1:
+        ap.error("give exactly one of: binary, --read, --boot-linux")
 
     print(f"uart_tsi.py  port {a.tty}  {a.baud} baud")
     elf = None
-    if a.read is None:
+    if a.binary:
         try:
             elf = Elf(a.binary)
         except (OSError, ValueError) as e:
             ap.error(str(e))
         print(f"  {os.path.basename(a.binary)}  entry 0x{elf.entry:x}")
 
-    tsi = Tsi(a.tty, a.baud)
+    tsi = Tsi(a.tty, a.baud, timeout=a.timeout)
     try:
         tsi.open()
     except serial.SerialException as e:
@@ -413,6 +497,8 @@ def main():
         return 2
     with tsi:
         try:
+            if a.boot_linux:
+                return boot_linux(tsi, a.boot_mailbox, a.boot_timeout, a.boot_retry)
             return read_word(tsi, a.read) if a.read is not None else run_elf(tsi, elf)
         except TimeoutError as e:
             print(f"\n  {e}")

@@ -36,8 +36,8 @@
 // SPI SCLK frequency for the payload copy (copy(), CMD18), in kHz
 // 300 kHz instead of the 25 MHz default. With our SD card, 25 MHz did not get
 // past the init commands back when init and copy shared one divisor; init now
-// runs at SPI_INIT_CLK (300 kHz). The copy stays at 300 kHz here so the ROM
-// matches the released GemminiVCU118SDConfig50-sd48-spi300k bitstream.
+// runs at SPI_INIT_CLK (300 kHz). This default only applies to the SD-only ROM
+// (WithVCU118Tweaks); the dual-boot ROM sets SPI_CLK from its config (1 MHz).
 #ifndef SPI_CLK
 #define SPI_CLK 	300
 #endif
@@ -295,7 +295,7 @@ static int host_wants_linux(void)
 			msip[0] = 0;
 			return 0;
 		}
-		if (*mbox == BOOT_MAGIC_LINUX) {  /* uart_tsi_dual.py --boot-linux */
+		if (*mbox == BOOT_MAGIC_LINUX) {  /* uart_tsi.py --boot-linux */
 			*mbox = BOOT_ACK;
 			__asm__ __volatile__ ("fence" : : : "memory");
 			return 1;

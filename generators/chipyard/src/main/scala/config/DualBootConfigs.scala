@@ -24,7 +24,7 @@ import sifive.blocks.devices.gpio.{PeripheryGPIOKey, GPIOParams}
 /** Boot ROM = sdboot built with -DDUALBOOT (fpga/src/main/resources/vcu118/sdboot).
   *
   * The ROM waits for the host: MSIP (uart_tsi loaded a program) -> bare-metal,
-  * mailbox magic (uart_tsi_dual.py --boot-linux) -> SD copy and Linux.
+  * mailbox magic (uart_tsi.py --boot-linux) -> SD copy and Linux.
   * Each parameter set builds into its own directory, so neither the default
   * sdboot ROM (build/) nor another dual-boot variant is overwritten.
   *

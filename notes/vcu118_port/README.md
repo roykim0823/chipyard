@@ -2,18 +2,17 @@
 
 - **Author:** Min Jung
 - **Paths:** All paths are relative to the Chipyard root (`chipyard/`).
-- **Shared files:** Everything needed for the hands-on part is in `notes/vcu118_port/`. On the Windows host, copy this whole folder and use it as the **working folder**; relative paths in Windows commands (`.\uart_tsi.py`, etc.) are relative to it.
+- **Shared files:** Everything needed for the hands-on part is in `notes/vcu118_port/`.
 
   ```text
   notes/vcu118_port/
   ├── README.md                                     # this document
   ├── patches/
   │   ├── firemarshal-prototype-buildroot-config.patch   # 7.2 Step 0
-  │   ├── opensbi-sbi_pmu-keep-cy-ir.patch               # 7.2 Step 0
-  │   └── sdboot-48MiB-300kHz.patch                      # only when reproducing the bitstream (4.1)
-  └── uart_tsi.py                                   # UART-TSI host tool (6.3)
+  │   └── opensbi-sbi_pmu-keep-cy-ir.patch               # 7.2 Step 0
+  └── uart_tsi.py                                   # board host tool: bare-metal over UART-TSI, Linux boot request (6.3)
   ```
-- **Bitstreams:** Not in the repository; distributed as a GitHub Release (`vcu118-port-v1`). Download them into `bitstream\` inside the Windows working folder (5.2 Step 3).
+- **Bitstream:** One bitstream, **`GemminiVCU118DualBootConfig`**, runs both the bare-metal and the Linux tests. It is not distributed; build it yourself (chapter 4). The test board's configuration flash holds this bitstream (5.2).
 
 > **Conventions**
 > - Hands-on steps are written in the order **Goal / Commands / Expected output / ✅ Checkpoint / ⚠️ Caution**.
@@ -27,7 +26,7 @@
 - [2. Prerequisites](#2-prerequisites)
 - [3. Hardware Configuration (Configs)](#3-hardware-configuration-configs)
 - [4. Bitstream Generation](#4-bitstream-generation)
-- [5. Board Setup and Programming](#5-board-setup-and-programming)
+- [5. Board Setup](#5-board-setup)
 - [6. Bare-metal Hands-on](#6-bare-metal-hands-on)
 - [7. Linux Hands-on](#7-linux-hands-on)
 - [8. Results](#8-results)
@@ -39,12 +38,14 @@
 
 ### 0.1 Purpose
 Build a Rocket + Gemmini SoC with Chipyard, put it on a Xilinx VCU118, and run Gemmini tests and DNN workloads (MobileNet, ResNet50)
-through two paths: **bare-metal (UART-TSI)** and **Linux (SD boot)**.
-The document also records the problems hit during bring-up (SD payload limit, login failure, cycle counters, etc.) and their fixes.
+through two paths: **bare-metal (UART-TSI)** and **Linux (SD boot)**. Both paths run on **one dual-boot bitstream** (`GemminiVCU118DualBootConfig`); the host picks the path after each reset over the same USB-UART cable.
+The document also records the problems hit during bring-up (SD payload limit, SD SPI clock, login failure, cycle counters, etc.) and their fixes.
 
 > **Scope**
-> - **Chapters 3–4 (background)**: how the SoC configs and bitstreams were built, and the results. The bitstreams are provided pre-built, so you do not need to follow these chapters. Use them only if you need to reproduce the bitstreams.
-> - **Chapters 5–7 (hands-on)**: step-by-step, from programming the provided bitstream to bare-metal / Linux board tests.
+> - **Chapters 3–4**: the SoC config and how the bitstream is built, with the results. The bitstream is not distributed, so build it with these chapters if your board does not already have it.
+> - **Chapters 5–7 (hands-on)**: step-by-step, from the board with the bitstream in flash to bare-metal / Linux board tests.
+>
+> **How this document was tested:** the bitstream was generated in the devcontainer on the build server (Vivado 2025.2), written to the VCU118's configuration flash, and the board tests were run with `uart_tsi.py` from the same server, which is connected to the board's USB-UART.
 
 ### 0.2 Tested Environment and Versions
 
@@ -55,12 +56,13 @@ The document also records the problems hit during bring-up (SD payload limit, lo
 | testchipip | `26f821b` | |
 | FireMarshal | `21119e5` (v1.12.0-274) | With the changes in 7.2 Step 0 |
 | Linux / OpenSBI | 6.6 (`v6.6-4-g67bc4513761`) / v1.2 (`v1.2-78-g5ccebf0`, `PLATFORM=generic`) | FireMarshal `boards/prototype` |
-| Vivado (bitstream generation) | 2023.1 | External build environment (chapters 3–4, background) |
-| Vivado (programming) | 2023.1 | Windows, Hardware Manager (5.2) |
+| Bitstream config | `GemminiVCU118DualBootConfig` | Bare-metal and Linux on one bitstream (3.2) |
+| Vivado (bitstream generation) | 2025.2 | Server install, bind-mounted into the devcontainer at `/opt/Xilinx` (2.2 Step 3) |
+| Bitstream on the board | VCU118 configuration flash | Loaded at power-up (5.2). Flash programming is not covered here |
 | RISC-V toolchain | `riscv64-unknown-linux-gnu-gcc` 13.2.0 (`.conda-env/riscv-tools`) | |
-| Build Host OS | devcontainer Ubuntu 24.04.4 (Linux Docker host) | |
-| Test Host OS | Windows (PowerShell) + WSL2 | uart_tsi.py, UART console, SD writing (WSL2 + usbipd-win, 7.3) |
-| Python / pyserial | 3.13.15 / 3.5 | Runtime for uart_tsi.py |
+| Build / test host | devcontainer Ubuntu 24.04.5 on a Linux server, the board's USB cables plugged into that server | Builds, bitstream generation, `uart_tsi.py`, UART console |
+| Python / pyserial | 3.10.14 / 3.5 (chipyard conda env) | Runtime for `uart_tsi.py` |
+| Serial terminal | picocom 3.1 | Linux console (7.5) |
 
 ---
 
@@ -80,11 +82,14 @@ ChipTop = VCU118 IO & Harness + DigitalTop
      │    └─ RoCC cmd / RoCC PTW ── Gemmini (RoCC Matrix Multiplication Accelerator)
      └─ System Bus
          ├─ Memory Bus    : L2 (InclusiveCache, 512 KB) → TL to AXI → DDR4 (MIG, 2 GB)
-         ├─ Periphery Bus : UART (0x6400_0000), SPI-SD (0x6400_1000)
-         └─ Control Bus   : BootROM(sdboot, 0x1_0000), PLIC(0xC00_0000), CLINT(0x200_0000), Debug(0x0)
+         ├─ Periphery Bus : UART (0x6400_0000), SPI-SD (0x6400_1000), GPIO (0x6400_2000, 1 pin = TSI gate)
+         ├─ Front Bus     : UART-TSI (TSIToTileLink, host → memory)
+         └─ Control Bus   : BootROM(sdboot -DDUALBOOT, 0x1_0000), PLIC(0xC00_0000), CLINT(0x200_0000), Debug(0x0)
+
+ Harness: console UART + UART-TSI share the on-board USB-UART (CP2105 Standard port); SD card on PMOD J52
 ```
 
-- **RISC-V Tile**: one Rocket core (RV64GC + B/Zfh extensions, Sv39 MMU). Gemmini shares the core's PTW and uses virtual addresses, so it also works from Linux user programs.
+- **RISC-V Tile**: one Rocket core (RV64GC, Sv39 MMU). Gemmini shares the core's PTW and uses virtual addresses, so it also works from Linux user programs.
 - **RoCC**: Rocket's custom-instruction interface. Gemmini commands are delivered as RoCC custom instructions.
 - **L2**: 1024 sets × 8 ways × 64 B = 512 KB (DTS `cache-controller@2010000`).
 - **TL**: TileLink (chip-scale interconnect), **PLIC**: Platform-Level Interrupt Controller, **CLINT**: Core-Local Interruptor.
@@ -92,46 +97,45 @@ ChipTop = VCU118 IO & Harness + DigitalTop
 ### 1.3 Overall Workflow
 
 ```
-[Background · chapters 3–4, bitstreams provided]
-Chipyard Configuration → RTL Elaboration → Vivado Implementation → Bitstream Generation
+[Chapters 3–4 · build server]
+Chipyard Configuration → RTL Elaboration → Vivado Implementation → Bitstream Generation → configuration flash
 
 [Hands-on · chapters 5–7]
-  → VCU118 Programming → Basic Board Bring-up
-      ├─ Bare-metal : Rocket Test → Gemmini Test → DNN Test        (UART-TSI, no SD needed)
-      └─ Linux      : SD Boot → OpenSBI → Linux → Gemmini Test     (SD card needed)
+  → Power-up (bitstream loads from flash) → CPU_RESET → host picks the path with uart_tsi.py
+      ├─ Bare-metal : uart_tsi.py <ELF>        → Rocket Test → Gemmini Test → DNN Test
+      └─ Linux      : uart_tsi.py --boot-linux → SD Boot → OpenSBI → Linux → Gemmini Test
 ```
 
 ### 1.4 Bare-metal vs Linux
 
 | | Bare-metal | Linux |
 |---|---|---|
-| Program loading | UART-TSI (host → DDR) | SD card (BootROM sdboot → DDR) |
-| SD card | Not needed | Needed (PMOD) |
-| Output path | HTIF (tohost/fromhost) → host console | UART console (SiFive UART, 115200) |
+| Bitstream | `GemminiVCU118DualBootConfig` | ← same bitstream |
+| How the path is chosen | `uart_tsi.py <ELF>` (sets MSIP after loading) | `uart_tsi.py --boot-linux` (mailbox request) |
+| Program loading | UART-TSI (host → DDR) | SD card (boot ROM → DDR, 48 MiB from sector 34) |
+| SD card | Not needed | Needed (PMOD J52) |
+| Output path | HTIF (tohost/fromhost) → host terminal | UART console on the same USB-UART (115200 after the kernel console starts, 7.5) |
 | Execution mode | M-mode | U-mode (Linux user space) |
 | Binaries | `*-baremetal` | `*-linux` (dynamically linked, glibc) |
-| Switching tests | Re-send every ELF (resnet50: 125.5 MB) | Write the SD once, pick tests from the shell |
+| Switching tests | Re-send every ELF (resnet50: 125.5 MB), CPU_RESET before each | Write the SD once, pick tests from the shell |
 | Use | HW functional checks, performance baseline (no virtual-address/TLB overhead) | Real-environment checks, regression over many tests |
-| Bitstream config | `GemminiVCU118UARTTSIConfig` (`WithVCU118UARTTSITweaks`) | `GemminiVCU118Config` (`WithVCU118Tweaks`) |
 
-Because of the SD card, the two experiments use **different bitstreams** (3.2). The SPI-SD and BootROM (sdboot) in 1.2 apply only to the SD-card version (`WithVCU118Tweaks`).
+The boot ROM decides **once per reset**: press CPU_RESET before every run, whichever path you take (5.3).
 
 ---
 
 ## 2. Prerequisites
 
 ### 2.1 Hardware
-- [ ] Xilinx VCU118 board + power supply
-- [ ] JTAG USB cable (on-board USB-JTAG, for programming the bitstream)
-- [ ] UART USB cable (on-board CP2105 USB-UART, see 5.1)
-- [ ] (Optional) 3.3 V Pmod USB-UART — to watch the console on PMOD J52 pins 9/10 with the no-SD version (3.1)
-- [ ] PMOD MicroSD adapter (Digilent PmodMicroSD, for Linux)
+- [ ] Xilinx VCU118 board + power supply, with the `GemminiVCU118DualBootConfig` bitstream in its configuration flash (5.2)
+- [ ] UART USB cable (on-board CP2105 USB-UART, see 5.1) — the only cable the tests need: UART-TSI and the Linux console share it
+- [ ] PMOD MicroSD adapter (Digilent PmodMicroSD, for Linux) on PMOD J52
 - [ ] MicroSD card (partition 1 needs at least 48 MiB; 512 MiB recommended)
-- [ ] USB SD card reader (to pass through from Windows to WSL2, 7.3; a laptop's built-in SD slot cannot be passed to WSL)
-- [ ] Host PCs — build: Linux server (devcontainer) / test: Windows (Vivado, uart_tsi.py, UART console) + WSL2 (SD writing)
+- [ ] USB SD card reader (for writing the image, 7.3)
+- [ ] Host — a Linux server running the devcontainer, with the board's USB-UART plugged into it (builds, bitstream generation, `uart_tsi.py`, console)
 
 ### 2.2 Software Setup
-The Chipyard environment (Steps 1, 2, 6) is **for software builds only**. The bitstreams are provided, so there is no hardware build (Vivado synthesis). This environment produces the bare-metal test ELFs (6.4) and the FireMarshal Linux image (7.2).
+Everything runs on the build server inside the devcontainer: the bitstream (chapter 4), the bare-metal test ELFs (6.4), the FireMarshal Linux image (7.2), and the board tests themselves (`uart_tsi.py`, console).
 
 #### Step 1. Clone Chipyard and run build-setup
 ```bash
@@ -156,33 +160,31 @@ riscv64-unknown-elf-gcc --version
 ```
 ⚠️ **Caution**: Run the toolchain and all build commands inside the conda environment (`source env.sh`).
 
-#### Step 3. Install Vivado and the JTAG cable driver (Windows, for programming)
-Used only for programming the bitstream (5.2). The Windows host just needs the **Vivado Hardware Manager**; **Vivado Lab Edition** is enough (no synthesis license required).
-The build host (devcontainer) does not need Vivado.
+#### Step 3. Vivado (bitstream generation)
+Vivado 2025.2 is installed on the server and bind-mounted read-only into the devcontainer at `/opt/Xilinx` (see `.devcontainer/devcontainer.json`). Needed only for chapter 4.
+```bash
+source env.sh
+export PATH="$PATH:/opt/Xilinx/2025.2/Vivado/bin"   # append; do not source settings64.sh after env.sh
+which dtc vivado    # dtc must be .conda-env/bin/dtc
+```
+⚠️ **Caution**: `settings64.sh` puts Vivado's own `dtc` first in `PATH`. That `dtc` cannot find `libyaml-0.so.2` in the container, and elaboration fails with `Failed to run dtc; is it in your path?` (9.2).
 
-**You must install the JTAG cable driver.** Windows needs it to recognize the board's USB-JTAG.
-- Enable **Install Cable Drivers** in the Vivado installer.
-- If Vivado is already installed without it, run the script below as administrator (for Lab Edition, use `Vivado_Lab\<version>`):
-  ```powershell
-  cd <Vivado install path>\Vivado\<version>\data\xicom\cable_drivers\nt64
-  .\install_drivers_wrapper.bat
-  ```
-- Re-plug the USB cable after installing the driver.
+#### Step 4. Serial port access (USB-UART)
+The on-board CP2105 shows up as two ports. The FPGA is wired to the **Standard** port (usually `/dev/ttyUSB1`); the Enhanced port (`/dev/ttyUSB0`) goes to the system controller.
+```bash
+for t in /sys/class/tty/ttyUSB*; do echo "$(basename $t): $(cat $t/device/../interface)"; done
+sudo chmod 666 /dev/ttyUSB1        # or add the user to the dialout group
+```
+✅ **Checkpoint**: one port prints `Standard Com Port`; use that one everywhere below.
 
-✅ **Checkpoint**: `get_hw_targets` in 5.2 Step 2 does not return an empty list.
+⚠️ **Caution**: the privileged devcontainer only sees the `/dev` nodes that existed when it started. If the USB cable is re-plugged or the board's USB re-enumerates, reopen the container (9.2).
 
-#### Step 4. Install the CP2105 USB-UART driver (Windows)
-To use the on-board USB-UART (CP2105) as a COM port, install the Silicon Labs **CP210x VCP driver**.
-- Download and install "CP210x Universal Windows Driver" from the Silicon Labs website.
-- Re-plug the USB cable after installing.
-
-✅ **Checkpoint**: Device Manager → Ports (COM & LPT) shows two ports: **`Silicon Labs Dual CP2105 USB to UART Bridge: Standard COM Port (COMx)`** and **`... Enhanced COM Port (COMy)`**. The tutorial uses the Standard port (5.1).
-
-#### Step 5. Python environment (pyserial)
-Tested with Python **3.13.15** and pyserial **3.5**.
-```powershell
-python --version        # Python 3.13.15
-pip install pyserial==3.5
+#### Step 5. Python (pyserial) and a serial terminal
+`uart_tsi.py` needs pyserial; it is installed in the chipyard conda environment (Python 3.10.14, pyserial 3.5). The Linux console uses picocom.
+```bash
+source env.sh
+python3 -c "import serial; print(serial.__version__)"   # 3.5 (pip install pyserial==3.5 if missing)
+sudo apt-get install -y picocom
 ```
 
 #### Step 6. Initialize FireMarshal (board = prototype)
@@ -195,17 +197,11 @@ cat marshal-config.yaml
 
 ✅ **Checkpoint**: The line `board-dir : 'boards/prototype'` appears exactly once.
 
-#### Step 7. WSL2 + usbipd-win (Windows, for SD writing)
-To write the image to the SD card (7.3), the USB SD reader is passed through to WSL2 and written with Linux `dd`.
-```powershell
-wsl --install                      # WSL2 + Ubuntu (skip if already installed)
-winget install usbipd              # usbipd-win
-```
-Inside WSL, install the partitioning tool (needed only to partition a new card, 7.3 Step 3):
+#### Step 7. SD card writing tools
+The image is written to the SD card with Linux `dd` (7.3), on any Linux machine with a USB SD reader. The SD device is not visible inside the devcontainer, so write from the server host itself, another Linux PC, or Windows + WSL2 (usbipd-win). Install the partitioning tool there (needed only to partition a new card, 7.3 Step 3):
 ```bash
 sudo apt-get update && sudo apt-get install -y gdisk
 ```
-Copying the image from the server to Windows (7.3 Step 1) uses `scp` from the built-in Windows OpenSSH client.
 
 ### 2.3 Directory Layout
 
@@ -215,14 +211,15 @@ Shows where files come from during the tutorial and where they go.
 ```text
 chipyard/
 ├── notes/vcu118_port/                         [provided] README.md (this document), patches/, uart_tsi.py
-│                                              (bitstreams: GitHub Release, 5.2 Step 3)
-├── tests/build/*.riscv                        [built] 6.4 Step 1 → Windows (6.4 Step 4)
+├── fpga/generated-src/chipyard.fpga.vcu118.VCU118FPGATestHarness.GemminiVCU118DualBootConfig/
+│   └── obj/VCU118FPGATestHarness.bit          [built] chapter 4 → configuration flash (5.2)
+├── tests/build/*.riscv                        [built] 6.4 Step 1
 ├── .conda-env/riscv-tools/                    ($RISCV)
 │   └── riscv64-unknown-elf/share/riscv-tests/
-│       └── benchmarks/*.riscv                 [built] build-setup (6.4 Step 2) → Windows
+│       └── benchmarks/*.riscv                 [built] build-setup (6.4 Step 2)
 ├── generators/gemmini/software/gemmini-rocc-tests/
 │   └── build/{bareMetalC,imagenet}/           [built] 6.4 Step 3
-│       ├── *-baremetal                        → Windows (6.4 Step 4)
+│       ├── *-baremetal                        → uart_tsi.py (6.5)
 │       └── *-linux                            → overlay (7.2 Step 2)
 └── software/
     ├── gemmini-all/                           [authored] 7.2 Steps 2–3
@@ -231,24 +228,23 @@ chipyard/
     │       ├── root/{gemmini,imagenet}/       ← copies of *-linux from build/
     │       └── etc/sysctl.d/90-perf-user-access.conf
     └── firemarshal/images/prototype/gemmini-all/
-        └── gemmini-all-bin-nodisk-flat        [built] 7.2 Step 4 → Windows → SD card (7.3)
+        └── gemmini-all-bin-nodisk-flat        [built] 7.2 Step 4 → SD card (7.3)
 ```
 
-For the Scala / sdboot files used to build the bitstreams, see table "(1) Reference-only changes" below.
+The bare-metal ELFs are run in place from the chipyard root; there is nothing to copy to another machine.
 
 There are two kinds of changes relative to upstream.
 
-**(1) Changes used to build the bitstreams — reference only (not touched in the hands-on part)**
-
-Already included in the provided bitstreams. Needed only if you reproduce the bitstreams yourself.
+**(1) Changes used to build the bitstream (already in the repository)**
 
 | File | Change |
 |---|---|
-| `fpga/src/main/scala/vcu118/Configs.scala` | Adds custom configs (3.1) |
-| `fpga/src/main/scala/vcu118/HarnessBinders.scala` | Adds harness binders `WithUARTTSI` and `WithPMODUART` (3.1) |
-| `fpga/src/main/scala/vcu118/TestHarness.scala` | Places the SPI-SD overlay only when PMOD J52 is wired for SDIO, so the no-SD config elaborates (3.1) |
-| `generators/chipyard/src/main/scala/config/RoCCAcceleratorConfigs.scala` | Adds custom configs (3.1) |
-| `fpga/src/main/resources/vcu118/sdboot/sd.c` | `PAYLOAD_SIZE_B` 30 → 48 MiB, `SPI_CLK` 25 MHz → 300 kHz (7.4). Patch: `notes/vcu118_port/patches/sdboot-48MiB-300kHz.patch` |
+| `fpga/src/main/scala/vcu118/Configs.scala` | Adds `WithVCU118DualBootTweaks` and `GemminiVCU118DualBootConfig` (3.1) |
+| `fpga/src/main/scala/vcu118/HarnessBinders.scala` | Adds `WithVCU118SharedUART`: console UART + UART-TSI on the on-board USB-UART (3.1) |
+| `generators/chipyard/src/main/scala/config/DualBootConfigs.scala` | `WithDualBootROM` (builds sdboot `-DDUALBOOT` during elaboration), `WithVCU118PeripheralMap` (3.1) |
+| `generators/chipyard/src/main/scala/harness/DualBootHarnessBinders.scala` | `SharedUART` / `WithSharedUART`: one line for the console and TSI, with the GPIO gate (3.1) |
+| `generators/chipyard/src/main/scala/config/RoCCAcceleratorConfigs.scala` | `LeanGemminiDefaultParamsRocketConfig` (3.2) |
+| `fpga/src/main/resources/vcu118/sdboot/{sd.c, Makefile}` | Dual-boot wait/branch (`-DDUALBOOT`), separate init / copy SPI clocks, build-time overrides (7.4) |
 
 **(2) Changes you apply yourself during the hands-on part**
 
@@ -267,71 +263,61 @@ Already included in the provided bitstreams. Needed only if you reproduce the bi
 | Fragment | Role | Defined in |
 |---|---|---|
 | `WithFPGAFrequency(50)` | sbus/pbus/cbus/fbus/mbus and harness clocks at 50 MHz | `fpga/src/main/scala/vcu118/Configs.scala` |
-| `WithVCU118UARTTSITweaks` | **No-SD-card version.** Programs loaded over UART-TSI; console on PMOD J52 | `fpga/src/main/scala/vcu118/Configs.scala` |
-| `WithVCU118Tweaks` | **SD-card version.** Programs loaded from the SD card by sdboot; console on the on-board USB-UART | `fpga/src/main/scala/vcu118/Configs.scala` |
+| `WithVCU118DualBootTweaks` | **Dual-boot harness**: bare-metal over UART-TSI or Linux from the SD card, picked by the host after each reset (table below) | `fpga/src/main/scala/vcu118/Configs.scala` |
+| `WithVCU118Tweaks` | Base VCU118 harness that the dual-boot Tweaks build on: on-board USB-UART, SPI-SD on PMOD J52 (`VCU118ShellPMOD = "SDIO"`), 2 GB DDR, JTAG on FMC_J2, sdboot BootROM | `fpga/src/main/scala/vcu118/Configs.scala` |
 | `WithSystemBusWidth(128)` | 128-bit system bus | `generators/chipyard/src/main/scala/config/fragments/SubsystemFragments.scala:17` |
-| `WithNBigCores(1)` / `WithNHugeCores(1)` | One Rocket core (Big: 16 KB L1, Huge: 32 KB L1) | `generators/rocket-chip/src/main/scala/rocket/Configs.scala:62` |
+| `WithNBigCores(1)` | One Rocket core (BigCore: 16 KB L1 I$ / D$) | `generators/rocket-chip/src/main/scala/rocket/Configs.scala:62` |
 
-#### Configs added for this tutorial
-
-| File | Class | Description |
-|---|---|---|
-| `fpga/src/main/scala/vcu118/Configs.scala` | `WithVCU118UARTTSITweaks` | No-SD-card version (comparison table below) |
-| | `WithVCU118Tweaks` | SD-card version (comparison table below) |
-| | `WithUARTTSIPeripherals` | Keeps only the UART at `0x64000000`, removes SPI, assigns PMOD J52 to JTAG (`VCU118ShellPMOD = "JTAG"`) |
-| | `WithNoSDBootSystemModifications` | `WithSystemModifications` without the sdboot BootROM — uses the default Chipyard BootROM (WFI, then wait for MSIP) |
-| | `GemminiVCU118UARTTSIConfig`, `GemminiVCU118Config` | VCU118 configs used in the experiments (3.2) |
-| `fpga/src/main/scala/vcu118/HarnessBinders.scala` | `WithUARTTSI` | Connects UART-TSI to the on-board USB-UART (AW25/BB21) |
-| | `WithPMODUART` | Connects the console UART to PMOD J52 pins 9/10 (AT15/AT16, LVCMOS18) |
-| `generators/chipyard/src/main/scala/config/RoCCAcceleratorConfigs.scala` | `LeanGemminiDefaultParamsRocketConfig` | Rocket (BigCore) + Gemmini `defaultConfig` SoC (3.2) |
-
-#### Comparing the two Tweaks
-
-| Item | `WithVCU118UARTTSITweaks` (no SD) | `WithVCU118Tweaks` (with SD) |
-|---|---|---|
-| Used in | Bare-metal (chapter 6) | Linux (chapter 7) |
-| Program loading | UART-TSI — the host writes directly into DDR | SD sector 34 → DDR (7.1) |
-| BootROM | Default Chipyard BootROM (WFI, then wait for MSIP) — `WithNoSDBootSystemModifications` | sdboot — `WithSystemModifications` (builds `fpga/src/main/resources/vcu118/sdboot` during elaboration) |
-| TSI | `WithUARTTSIClient` (921600 baud) + `WithUARTTSI` — on-board USB-UART | None (`SerialTLKey => Nil`) |
-| Console UART | PMOD J52 pins 9/10 (`WithPMODUART`) | On-board USB-UART (`WithUART`) |
-| SD card (SPI) | None (`WithUARTTSIPeripherals`) | `WithSPISDCard`, SPI at `0x64001000` (`WithDefaultPeripherals`) |
-| PMOD J52 used for | JTAG + console UART (`VCU118ShellPMOD = "JTAG"`) | SD card (`VCU118ShellPMOD = "SDIO"`) |
-| Debug JTAG location | PMOD J52 | FMC_J2 |
-| Extra hardware | None — bare-metal output comes back over the TSI link via HTIF. A 3.3 V Pmod USB-UART if you want the PMOD J52 console | PMOD MicroSD adapter + SD card |
-
-Common to both: clocking (default 100 MHz, overridden by `WithFPGAFrequency(50)` in the 3.2 configs), UART at `0x64000000`, 2 GB DDR (`ExtMem` = `VCU118DDRSize`), JTAG, TL backing memory, TL monitors removed, one memory channel.
-
-Why the UARTs are placed this way: the only USB-UART wired to the FPGA fabric is the standard COM port of the on-board CP2105. The no-SD version uses that port for TSI and moves the console to PMOD J52.
-
-### 3.2 Gemmini Default Config Used in the Experiments
-
-The SoC (`LeanGemminiDefaultParamsRocketConfig`) is the same; only the VCU118 harness (Tweaks) differs depending on the SD card. Bare-metal uses the no-SD version and Linux uses the SD version.
-
-| Item | Bare-metal (chapter 6) | Linux (chapter 7) |
-|---|---|---|
-| VCU118 config | `GemminiVCU118UARTTSIConfig` | `GemminiVCU118Config` |
-| Harness | `WithVCU118UARTTSITweaks` (no SD card) | `WithVCU118Tweaks` (with SD card) |
-| CPU | 1 Rocket core (BigCore) | ← |
-| Gemmini | `defaultConfig` — 16×16, Dataflow BOTH (WS, OS) | ← |
-| Clock | 50 MHz | ← |
-| System bus | 128-bit | ← |
+#### What `WithVCU118DualBootTweaks` adds on top of `WithVCU118Tweaks`
 
 ```scala
-// Bare-metal (UART-TSI)
-class GemminiVCU118UARTTSIConfig extends Config(
+class WithVCU118DualBootTweaks(payloadSizeB: BigInt = 30 << 20, spiClkKHz: Int = 1000,
+                               spiInitClkKHz: Int = 300) extends Config(
+  new WithVCU118SharedUART ++
+  new chipyard.iobinders.WithGPIOPunchthrough ++
+  new testchipip.tsi.WithUARTTSIClient(initBaudRate = BigInt(921600)) ++
+  new chipyard.WithDualBootROM(payloadSizeB, spiClkKHz, spiInitClkKHz) ++
+  new chipyard.WithVCU118PeripheralMap(consoleBaud = 921600) ++
+  new WithVCU118Tweaks
+)
+```
+
+| Fragment | Effect | Defined in |
+|---|---|---|
+| `WithVCU118SharedUART` | Console UART and UART-TSI share the on-board USB-UART (CP2105 Standard port): RX feeds both, TX is the AND of both (each idles high). GPIO[0] driven high holds the TSI receiver idle (the **TSI gate**) | `fpga/src/main/scala/vcu118/HarnessBinders.scala` → `harness/DualBootHarnessBinders.scala` (`WithSharedUART`) |
+| `WithGPIOPunchthrough` | Brings the GPIO port out to the harness, so the gate pin can reach the shared UART | chipyard iobinders |
+| `WithUARTTSIClient(921600)` | UART-TSI client (`TSIToTileLink` on the front bus) at 921600 baud | testchipip |
+| `WithDualBootROM(payloadSizeB, spiClkKHz, spiInitClkKHz)` | BootROM = sdboot built with `-DDUALBOOT` during elaboration, into its own directory `sdboot/build-dualboot-<pbus>MHz-<size>B-init<k>kHz-<k>kHz/` (7.1, 7.4) | `generators/chipyard/src/main/scala/config/DualBootConfigs.scala` |
+| `WithVCU118PeripheralMap(921600)` | UART `0x6400_0000` (921600 baud), SPI `0x6400_1000`, GPIO `0x6400_2000` (1 pin) — the addresses hard-coded in sdboot's `include/platform.h` | `generators/chipyard/src/main/scala/config/DualBootConfigs.scala` |
+
+Defaults: SD init clock 300 kHz (the SD spec allows 100–400 kHz during identification), SD copy clock 1 MHz (measured limit about 3 MHz on this board, 7.4), payload 30 MiB (the config below sets 48 MiB).
+
+Also inherited from `WithVCU118Tweaks`: 2 GB DDR (`ExtMem` = `VCU118DDRSize`), JTAG on FMC_J2, TL backing memory, TL monitors removed, one memory channel, default 100 MHz clocking (overridden by `WithFPGAFrequency(50)`).
+
+> `Configs.scala` also keeps two single-path configs from the earlier bring-up, `GemminiVCU118UARTTSIConfig` (bare-metal only, no SD) and `GemminiVCU118Config` (Linux only). They are not used in this tutorial.
+
+### 3.2 Config Used in the Experiments
+
+| Item | Value |
+|---|---|
+| VCU118 config | `GemminiVCU118DualBootConfig` |
+| Harness | `WithVCU118DualBootTweaks(payloadSizeB = 48 << 20)` |
+| CPU | 1 Rocket core (BigCore) |
+| Gemmini | `LeanGemminiConfig(defaultConfig)` — 16×16, Dataflow **WS** (3.3) |
+| Clock | 50 MHz (all buses) |
+| System bus | 128-bit |
+| SD payload / SPI clocks | 48 MiB / init 300 kHz, copy 1 MHz |
+| UART-TSI / console UART | 921600 baud, both on the on-board USB-UART |
+
+```scala
+// fpga/src/main/scala/vcu118/Configs.scala
+class GemminiVCU118DualBootConfig extends Config(
   new WithFPGAFrequency(50) ++
-  new WithVCU118UARTTSITweaks ++
+  new WithVCU118DualBootTweaks(payloadSizeB = 48 << 20) ++
   new chipyard.LeanGemminiDefaultParamsRocketConfig
 )
 
-// Linux (SD boot)
-class GemminiVCU118Config extends Config(
-  new WithFPGAFrequency(50) ++
-  new WithVCU118Tweaks ++
-  new chipyard.LeanGemminiDefaultParamsRocketConfig
-)
-
-// Common SoC
+// generators/chipyard/src/main/scala/config/RoCCAcceleratorConfigs.scala
 class LeanGemminiDefaultParamsRocketConfig extends Config(
   new gemmini.LeanGemminiConfig(gemmini.GemminiConfigs.defaultConfig) ++
   new chipyard.config.WithSystemBusWidth(128) ++
@@ -340,7 +326,8 @@ class LeanGemminiDefaultParamsRocketConfig extends Config(
 )
 ```
 
-- These classes were added for this tutorial (3.1 "Configs added for this tutorial").
+- 48 MiB: the `gemmini-all` nodisk flat image is 42.8 MB (7.2).
+- `WithFPGAFrequency(50)` must be to the left of the Tweaks. The leftmost fragment wins, so it overrides the 100 MHz setting inside the Tweaks.
 
 ### 3.3 Default vs Lean
 
@@ -363,7 +350,7 @@ class LeanGemminiDefaultParamsRocketConfig extends Config(
 
 | Block | Item | Value |
 |---|---|---|
-| Rocket | ISA | RV64GC (DTS: `rv64imafdcbzicsr_zifencei_zihpm_zfh_zba_zbb_zbs_xrocket`) |
+| Rocket | ISA | RV64GC (DTS: `rv64imafdczicsr_zifencei_zihpm_xrocket`) |
 | | Cores | 1 |
 | | L1 I$ / D$ | 16 KB / 16 KB |
 | | MMU | Sv39 |
@@ -372,50 +359,45 @@ class LeanGemminiDefaultParamsRocketConfig extends Config(
 | Clock | | 50 MHz (all buses) |
 | Gemmini | Systolic array | 16 × 16 |
 | | Input / Accumulator | Int8 / Int32 |
-| | Dataflow | Default: BOTH (WS, OS) / Lean: WS |
+| | Dataflow | WS (Lean) |
 | | Scratchpad | 256 KB (4 banks) |
 | | Accumulator | 64 KB (2 banks) |
+| I/O | Console UART | `0x6400_0000`, 921600 baud at reset |
+| | SPI (SD card) | `0x6400_1000`, PMOD J52 |
+| | GPIO | `0x6400_2000`, 1 pin (TSI gate) |
+| | UART-TSI | 921600 baud, shares the on-board USB-UART with the console |
 
-### 3.5 Reference: Reproducing Elaboration
+### 3.5 Elaboration
 
-> Skip this section if you use the provided bitstreams. Use it only if you change a config or reproduce the bitstreams yourself.
-
-Commands to elaborate the configs into RTL and DTS (for the full bitstream, see 4.1).
+Elaborate the config into RTL and DTS (the `bitstream` target in 4.1 also starts from elaboration). Set up the shell as in 2.2 Step 3 first.
 
 ```bash
 source env.sh
+export PATH="$PATH:/opt/Xilinx/2025.2/Vivado/bin"
 cd fpga
-make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118UARTTSIConfig verilog     # Bare-metal
-make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118Config verilog   # Linux
+make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118DualBootConfig verilog
 ```
-- vcu118 defaults in `fpga/Makefile`: `CONFIG_PACKAGE=chipyard.fpga.vcu118`, `MODEL=VCU118FPGATestHarness`. If your config lives in another package, also pass `CONFIG_PACKAGE`.
-- `WithFPGAFrequency(50)` must be to the left of the Tweaks. The leftmost fragment wins, so it overrides the 100 MHz setting inside the Tweaks with 50 MHz.
+- vcu118 defaults in `fpga/Makefile`: `CONFIG_PACKAGE=chipyard.fpga.vcu118`, `MODEL=VCU118FPGATestHarness`.
+- Elaboration also builds the dual-boot BootROM: `fpga/src/main/resources/vcu118/sdboot/build-dualboot-50MHz-50331648B-init300kHz-1000kHz/sdboot.bin` (its `boot_defs` file shows `-DDUALBOOT -DPAYLOAD_SIZE_B=50331648 -DSPI_CLK=1000 -DSPI_INIT_CLK=300 PBUS_CLK=50`).
 - Check the result in `*.dts` (4.3).
 
 ---
 
 ## 4. Bitstream Generation
 
-This chapter describes how the provided bitstreams were built and what the results were. The hands-on part starts in chapter 5.
+This chapter describes how the bitstream on the test board was built and what the results were. It was built in the devcontainer on the build server.
 
-### 4.1 Reference: Reproducing the Bitstreams
-
-> Skip this section if you use the provided bitstreams. It needs a build environment with Vivado (including a synthesis license).
-
-To reproduce the Linux bitstream, first apply the sdboot patch (7.4):
-```bash
-git apply notes/vcu118_port/patches/sdboot-48MiB-300kHz.patch
-```
+### 4.1 Generating the Bitstream
 
 ```bash
 source env.sh
+export PATH="$PATH:/opt/Xilinx/2025.2/Vivado/bin"
 cd fpga
-make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118UARTTSIConfig bitstream     # for bare-metal
-make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118Config bitstream   # for Linux
+make SUB_PROJECT=vcu118 CONFIG=GemminiVCU118DualBootConfig bitstream
 ```
-- Even if you skip the elaboration in 3.5, the `bitstream` target starts from elaboration.
-- Each config produces its own bitstream (the `<build>` directories in 4.2 are named by config).
+- The `bitstream` target starts from elaboration (3.5) if it has not run yet.
 - If timing is not met (slack < 0), the Vivado flow prints `Failed to meet timing` and fails.
+- Run it in `tmux` or with `nohup`. Closing the VS Code window can stop the devcontainer and kill the build (9.2).
 
 ⚠️ **Caution — changing only sdboot does not update the BootROM.** The `make` dependencies only track Scala sources (`common.mk:136`).
 sdboot is built during elaboration and baked into the Verilog as a BootROM constant, so after changing `sd.c` you must
@@ -423,39 +405,38 @@ delete the `<build>` directory (4.2) or touch a Scala file. Otherwise **you get 
 
 ### 4.2 Build Outputs
 
-The only outputs needed for the hands-on part are the **two bitstreams (`.bit`)**, distributed as a GitHub Release (5.2 Step 3). Everything else is reference material produced along the way.
-
-`<build>` = `fpga/generated-src/chipyard.fpga.vcu118.VCU118FPGATestHarness.<CONFIG>/`
+`<build>` = `fpga/generated-src/chipyard.fpga.vcu118.VCU118FPGATestHarness.GemminiVCU118DualBootConfig/`
 
 | Category | Files | Location |
 |---|---|---|
 | Elaboration | `*.dts`, `*.mems.conf`, `*.top.f`, `*.fir`, `*.memmap.json` | `<build>` |
-| Gemmini SW header | `gemmini_params.h` | `generators/gemmini/software/gemmini-rocc-tests/include/` (overwritten during elaboration) |
+| Gemmini SW header | `gemmini_params.h` | `generators/gemmini/software/gemmini-rocc-tests/include/` (rewritten during elaboration; same content as the committed header, 4.3) |
+| Vivado log / checkpoints | `vivado.log`, `obj/post_{synth,opt,place,route}.dcp` | `<build>` |
 | Implementation reports | `utilization.txt`, `timing.txt`, `drc.txt`, `clocks.txt`, etc. | `<build>/obj/report/` |
 | Constraints | `*.shell.xdc`, `*.shell.sdc` | `<build>` |
 | Bitstream | `VCU118FPGATestHarness.bit` | `<build>/obj/` |
-| BootROM | `sdboot.bin` | `fpga/src/main/resources/vcu118/sdboot/build/` |
+| BootROM | `sdboot.bin`, `boot_defs` | `fpga/src/main/resources/vcu118/sdboot/build-dualboot-50MHz-50331648B-init300kHz-1000kHz/` |
 
 ### 4.3 Checking the Elaboration Results
 #### Device Tree (`*.dts`)
-
-For default Gemmini with BigCore. The SPI (SD) entries apply only to the SD-card version (`WithVCU118Tweaks`).
 
 | Item | Expected | Observed |
 |---|---|---|
 | DRAM base / size | 0x80000000 / 2 GB | `memory@80000000`, `reg = <0x80000000 0x80000000>` ✅ |
 | BootROM | 0x10000 | `rom@10000`, size 0x10000 ✅ |
 | CLINT / PLIC | 0x2000000 / 0xC000000 | `clint@2000000` / `interrupt-controller@c000000` ✅ |
-| UART / SPI (SD) | 0x64000000 / 0x64001000 | `serial@64000000` (sifive,uart0) / `spi@64001000` + `mmc@0` (mmc-spi-slot) ✅ |
-| riscv,isa | rv64imafdc | `rv64imafdcbzicsr_zifencei_zihpm_zfh_zba_zbb_zbs_xrocket` ✅ |
+| UART / SPI (SD) / GPIO | 0x64000000 / 0x64001000 / 0x64002000 | `serial@64000000` (sifive,uart0) / `spi@64001000` + `mmc@0` (mmc-spi-slot) / `gpio@64002000` (sifive,gpio0) ✅ |
+| riscv,isa | rv64imafdc | `rv64imafdczicsr_zifencei_zihpm_xrocket` ✅ |
 | L1 I$ / D$ | 16 KB / 16 KB (BigCore) | `i-cache-size` / `d-cache-size = <16384>` ✅ |
 | L2 | 512 KB | `cache-size = <524288>`, 1024 sets ✅ |
 | clock-frequency | 50 MHz | `sbus/pbus/cbus/mbus/fbus_clock = 50000000` ✅ |
 | timebase | 50 kHz | `timebase-frequency = <50000>` ✅ |
 
+The UART node has no `current-speed` or `clock-frequency` property; this decides the console baud rates during a Linux boot (7.5).
+
 #### Gemmini Parameters (`gemmini_params.h`)
 
-Excerpt from the original upstream header (`gemmini-rocc-tests` @ `7c540b3`):
+Excerpt (`gemmini-rocc-tests` @ `7c540b3`; elaboration of this config writes the same file):
 
 ```c
 #define DIM 16
@@ -469,100 +450,105 @@ typedef int32_t acc_t;
 #define ACC_READ_FULL_WIDTH
 ```
 
-⚠️ **Caution**: The software (gemmini-rocc-tests) must be compiled with **a header generated from the same config as the hardware**. Elaboration overwrites the header, so if you regenerate the bitstream with a different config, rebuild the tests too.
-default ↔ lean is the exception: no code references the header difference (`ACC_READ_*_WIDTH`), so the original header gives the same result (3.3).
+⚠️ **Caution**: The software (gemmini-rocc-tests) must be compiled with **a header generated from the same config as the hardware**. For `GemminiVCU118DualBootConfig` the header committed in the submodule already matches, so the tests can be built before or after elaboration. If you change the Gemmini config, rebuild the tests after elaboration.
 
 ### 4.4 Synthesis Results
-- Vivado version: 2023.1
+- Vivado version: 2025.2
 - Target part: `xcvu9p-flga2104-2L-e` (`part_fpga` in `fpga/fpga-shells/xilinx/vcu118/tcl/board.tcl`) — confirmed by `Device : xcvu9p-flga2104-2L-e` in `<build>/obj/report/utilization.txt` ✅
 
 ### 4.5 Implementation Results
-The results below are for the Linux version (`GemminiVCU118Config`).
 
 #### Timing
 
 | Item | Value | Verdict |
 |---|---|---|
-| WNS (setup) | 0.249 ns | ✅ ≥ 0 |
-| TNS | 0.000 ns (0 failing / 300,917 endpoints) | ✅ = 0 |
-| WHS (hold) | 0.007 ns | ✅ ≥ 0 |
-| THS | 0.000 ns (0 failing / 300,215 endpoints) | ✅ = 0 |
+| WNS (setup) | 0.106 ns | ✅ ≥ 0 |
+| TNS | 0.000 ns (0 failing / 304,010 endpoints) | ✅ = 0 |
+| WHS (hold) | 0.009 ns | ✅ ≥ 0 |
+| THS | 0.000 ns (0 failing / 303,308 endpoints) | ✅ = 0 |
 | Target clock | 50 MHz (`clk_out1_harnessSysPLL`, 20 ns) | |
 
 On the board, `Total cycles ÷ user time` also measures about 50 MHz, confirming the core runs at 50 MHz (7.6.2).
 
 #### Resource Utilization (post-route)
 
+From `<build>/obj/report/utilization.txt` (`report_utilization -hierarchical`). "Rocket" is the Rocket tile without Gemmini (core, FPU, L1 caches, PTW).
+
 | Resource | Used | Available | Utilization | Rocket | Gemmini |
 |---|---|---|---|---|---|
-| LUT | 240,040 | 1,182,240 | 20.30% | 30,783 | 173,633 |
-| FF | 104,807 | 2,364,480 | 4.43% | 12,783 | 60,863 |
+| LUT | 240,342 | 1,182,240 | 20.33% | 30,816 | 172,759 |
+| FF | 106,249 | 2,364,480 | 4.49% | 12,784 | 60,563 |
 | BRAM (36Kb equiv.) | 301.5 (RAMB36 225 + RAMB18 153) | 2,160 | 13.96% | 8 (RAMB18 16) | 128 (RAMB36 64 + RAMB18 128) |
 | URAM | 0 | 960 | 0.00% | 0 | 0 |
 | DSP | 230 | 6,840 | 3.36% | 24 | 203 |
 
-#### DRC / Power
+Breakdown of the main blocks:
+
+| Instance | LUTs | (LUTRAM) | FFs | RAMB36 | RAMB18 | DSP |
+|---|---:|---:|---:|---:|---:|---:|
+| SoC (`chiptop0`) | 222,807 | 7,962 | 81,620 | 200 | 152 | 227 |
+| └ Gemmini | 172,759 | 2,878 | 60,563 | 64 | 128 | 203 |
+| └ Rocket core | 5,708 | 80 | 2,108 | 0 | 0 | 13 |
+| └ FPU | 14,070 | 0 | 3,764 | 0 | 0 | 11 |
+| └ L1 D-cache | 6,182 | 2,664 | 2,417 | 0 | 0 | 0 |
+| └ Frontend (L1 I-cache) | 4,182 | 112 | 3,924 | 0 | 16 | 0 |
+| └ L2 (`InclusiveCache`) | 9,089 | 634 | 3,829 | 120 | 8 | 0 |
+| DDR4 controller (`mig`) | 17,102 | 1,696 | 23,652 | 25 | 1 | 3 |
+
+Gemmini accounts for about 72% of the design's LUTs.
+
+#### DRC
 
 | Item | Value |
 |---|---|
-| DRC errors | 0 (673 warnings — 655 DSP pipelining recommendations, etc., all non-critical) |
-| Total on-chip power | 4.575 W (dynamic 2.074 W + static 2.501 W; low-confidence estimate) |
+| DRC errors | 0 (676 warnings — 655 DSP pipelining recommendations, etc., all non-critical) |
 
 ✅ **Checkpoint**: WNS ≥ 0, 0 DRC errors
 
 ---
 
-## 5. Board Setup and Programming
+## 5. Board Setup
 
 ### 5.1 Connection and Power Checklist
-- [ ] 0. Power, JTAG, and UART cables connected
-- [ ] 1. Power switch up
-- [ ] 2. (Linux) PMOD adapter + SD card inserted
-- [ ] 3. Check the UART COM port — the on-board CP2105 shows up as two COM ports (Standard / Enhanced); the one wired to the FPGA is the **Standard COM port** (Enhanced is for the system controller). This port is UART-TSI in the no-SD version (chapter 6) and the console in the SD version (chapter 7). If no COM port appears, install the CP2105 driver (2.2 Step 4)
+- [ ] 0. Power and the UART USB cable connected; the UART cable goes to the server that runs the devcontainer
+- [ ] 1. (Linux) PMOD MicroSD adapter on **PMOD J52**, top row (pin 1 = CS), SD card inserted
+- [ ] 2. Power switch up — the bitstream loads from the configuration flash and the **DS34 DONE LED** lights (5.2)
+- [ ] 3. Find the CP2105 **Standard** port (`/dev/ttyUSB1` here) and make it accessible (2.2 Step 4). It carries both UART-TSI and the console
 
-⚠️ **Caution**: Do not use the PROG button (left).
+⚠️ **Caution**: Do not use the PROG button (left); it clears the FPGA configuration. Reset with **SW5 CPU_RESET**.
 
-### 5.2 Programming with Vivado Tcl
-#### Step 1. Start the Vivado Tcl shell
-Windows: Start menu → Vivado Tcl Shell
+### 5.2 Bitstream in the Configuration Flash
 
-#### Step 2. Connect to the HW server and select the device
-```tcl
-open_hw_manager
-connect_hw_server -url localhost:3121
-current_hw_target [lindex [get_hw_targets] 0]
-open_hw_target
-current_hw_device [lindex [get_hw_devices] 0]
-get_property PART [current_hw_device]
+The test board's configuration flash holds the `GemminiVCU118DualBootConfig` bitstream built in chapter 4. The FPGA loads it automatically at every power-up, so no programming step is needed before the tests. How to program the flash is not covered in this document.
+
+| Item | Value |
+|---|---|
+| Config | `GemminiVCU118DualBootConfig` |
+| File | `<build>/obj/VCU118FPGATestHarness.bit`, 39,595,808 B |
+| sha256 | `9095d8aa08dbdf640824c8fa8587f76c00d1a7bfa14cde936741a6eb8e02db28` |
+
+✅ **Checkpoint**: after power-up the DONE LED is lit and the link check in 6.5 Lab 0 answers.
+
+### 5.3 Choosing the Boot Path
+
 ```
-#### Step 3. Program the bitstream
-The bitstreams are not in the repository; they are distributed as a **GitHub Release**.
-- Release page: <https://github.com/roykim0823/chipyard/releases/tag/vcu118-port-v1>
-- Download both `.bit` files from the page's Assets into `bitstream\` inside the Windows working folder (`vcu118_port\bitstream\`).
-
-After downloading, compare the sha256 to make sure the files are correct (PowerShell: `Get-FileHash .\bitstream\<file> -Algorithm SHA256`). Pick the file for your experiment (3.2).
-
-| Experiment | Config | File | sha256 |
-|---|---|---|---|
-| Bare-metal | `GemminiVCU118UARTTSIConfig` | `GemminiVCU118Config50.bit` | `e639974f9d6704e630a3a06c5fed3c7c32657cdee6f0f095071e3dd573630cc3` |
-| Linux | `GemminiVCU118Config` | `GemminiVCU118SDConfig50-sd48-spi300k.bit` (`PAYLOAD_SIZE_B` 48 MiB, `SPI_CLK` 300 kHz — 7.4) | `57ecad2ce6e52da59956e88011337a6f458b50d5da9efd6d2eb1892fbb18c6a1` |
-
-The file names keep the config names the bitstreams were built under: `GemminiVCU118Config50` is now `GemminiVCU118UARTTSIConfig`, and `GemminiVCU118SDConfig50` is now `GemminiVCU118Config`. Only the names changed; the hardware is the same.
-
-Use `/` in Tcl paths.
-```tcl
-set_property PROGRAM.FILE {C:/<working folder>/vcu118_port/bitstream/<bitstream>.bit} [current_hw_device]
-get_property PROGRAM.FILE [current_hw_device]
-program_hw_devices [current_hw_device]
-refresh_hw_device [current_hw_device]
-```
-#### Step 4. Confirm completion
-```tcl
-get_property REGISTER.IR.BIT5_DONE [current_hw_device]
-report_property [current_hw_device]
+Power-up or CPU_RESET
+  └─ boot ROM (sdboot -DDUALBOOT) clears the mailbox, prints nothing, waits with no timeout
+       ├─ MSIP set by the host                 → bare-metal: jump to 0x8000_0000          (chapter 6)
+       └─ mailbox == "LINUXSD!" (from the host) → Linux:                                   (chapter 7)
+            write ACK → close TSI gate → print INIT → SD init → copy payload → BOOT → jump to 0x8000_0000
 ```
 
-✅ **Checkpoint**: `program_hw_devices` prints `INFO: [Labtools 27-3164] End of startup status: HIGH`, `BIT5_DONE = 1`, and the board's **DS34 DONE LED** is lit
+- **The choice is made once per reset.** Right after power-up the ROM is already waiting; after that, press CPU_RESET before every run.
+- While the ROM waits it prints nothing, because the TX line is shared with TSI responses.
+- `uart_tsi.py --read` only reads memory, so it does not use up the choice.
+- In both paths the ROM jumps to `0x8000_0000` with `a0 = hartid` and `a1 = DTB` (the DTB is stored in the BootROM).
+
+| Boot ROM parameter | Value |
+|---|---|
+| Mailbox | `0x8FFF_F800`, 64-bit |
+| Linux request magic | `0x4C494E5558534421` (`"LINUXSD!"`) |
+| ROM ack | `0x41434B4544545349` (`"ACKEDTSI"`), written back to the mailbox |
 
 ---
 
@@ -589,7 +575,7 @@ report_property [current_hw_device]
 ① ELF Parsing             PT_LOAD segments + symbol table (tohost/fromhost)
 ② ELF → DDR Load          Write segments to p_paddr, zero-fill .bss
 ③ Hart0 Start             Write 1 to CLINT MSIP (0x2000000)
-④ Rocket starts execution hart0, waiting in WFI in the BootROM, jumps to 0x80000000
+④ Rocket starts execution hart0, waiting in the dual-boot ROM (5.3), jumps to 0x80000000
 ⑤ Gemmini RoCC commands   Test code issues Gemmini commands
 ⑥ HTIF                    printf → tohost, exit → tohost (odd payload)
 ⑦ PASS / FAIL             Exit code 0 / 1
@@ -600,40 +586,54 @@ report_property [current_hw_device]
 
 ### 6.3 Host Tool
 
-The original `generators/testchipip/uart_tsi/` is a C++ program tied to fesvr and termios, so it is **Linux-only**.
-The host connected to the board is Windows, so we use `uart_tsi.py` (`notes/vcu118_port/uart_tsi.py`), a Python reimplementation of the host side. Run it from the Windows working folder (`vcu118_port\`).
+The original `generators/testchipip/uart_tsi/` is a C++ program tied to fesvr and termios, so it is **Linux-only** and knows nothing about the dual-boot ROM.
+We use `uart_tsi.py` (`notes/vcu118_port/uart_tsi.py`), a Python reimplementation of the host side that also sends the Linux boot request (7.5). Run it from the chipyard root inside the devcontainer, after `source env.sh` (2.2 Step 5).
 
 | | Original (C++) | `uart_tsi.py` |
 |---|---|---|
 | Dependencies | fesvr, pthread, termios | pyserial |
-| Platforms | Linux | Windows / Linux |
+| Platforms | Linux | Linux / Windows |
 | HTIF coverage | Full syscall proxy | Console putchar, `write` (fd 1/2), `exit` |
+| Dual-boot Linux request | — | `--boot-linux` |
 | Timeout / stall diagnosis | None | 10 s response timeout; warns with the likely cause after 30 s without progress |
 | TSI bytes on the wire | — | **Identical to the original** |
 
-```powershell
-# 1. Link check: read a single word (no load, no start)
-python .\uart_tsi.py --tty <COM> --baud 921600 --read 0x80000000
-# 2. Run a bare-metal program
-python .\uart_tsi.py --tty <COM> --baud 921600 <ELF>
+| Mode | Command | What it does |
+|---|---|---|
+| Link check | `--read ADDR` | Reads one 32-bit word over TSI and exits. Starts nothing, so the boot choice is still open |
+| Bare-metal | `<ELF>` | Loads the ELF's `PT_LOAD` segments, zero-fills `.bss`, sets MSIP, then serves HTIF until the program exits |
+| Linux | `--boot-linux` | Writes the magic to the boot mailbox once per second until the console prints `INIT`, then exits. The port then belongs to the console (7.5) |
+
+```bash
+T="python3 notes/vcu118_port/uart_tsi.py --tty /dev/ttyUSB1 --baud 921600"
+$T --read 0x80000000          # 1. link check: read a single word (no load, no start)
+$T <ELF>                      # 2. run a bare-metal program
+$T --boot-linux               # 3. boot Linux from the SD card (chapter 7)
 ```
 
-⚠️ **Caution**: `--baud` defaults to 115200. It must match the board's UART-TSI baud rate (921600), so always pass `--baud 921600`.
+| Option | Default | Notes |
+|---|---|---|
+| `--tty` | (required) | `/dev/ttyUSB1` here (`COM3` etc. on Windows) |
+| `--baud` | 115200 | **Always pass `--baud 921600`** — the board's UART-TSI baud rate |
+| `--timeout` | 10 s | Timeout for each TSI response |
+| `--boot-timeout` | 30 s | How long `--boot-linux` keeps asking |
+| `--boot-retry` | 1 s | Interval between mailbox writes |
+| `--boot-mailbox` | `0x8FFFF800` | Must match `sd.c` |
+
+⚠️ **Caution**: Close any terminal program (picocom, etc.) on the port before you run the script. Two programs reading the same port steal each other's bytes.
 
 Exit codes of `uart_tsi.py`:
 
 | Code | Meaning |
 |---|---|
-| `0` | The program exited with 0, or `--read` succeeded |
+| `0` | The program exited with 0, `--read` succeeded, or `--boot-linux` saw `INIT` |
 | `1` | The program exited with a non-zero value (printed as `exit code N`) |
-| `2` | Bad arguments, `cannot open port: …` (wrong port name, or another program such as a terminal holds it), or `no response from target (…)` |
+| `2` | Bad arguments, `cannot open port: …` (wrong port name, or another program such as a terminal holds it), `no response from target (…)`, or no `INIT` within `--boot-timeout` |
 | `130` | Interrupted with Ctrl+C |
-
-Bare-metal experiments use the `GemminiVCU118UARTTSIConfig` bitstream from 3.2 (`WithVCU118UARTTSITweaks`, no SD).
 
 ### 6.4 Building the Test Binaries
 
-Build all three on the build host (devcontainer), then copy the output ELFs to the Windows host and run them with `uart_tsi.py`.
+Build all three in the devcontainer. The ELFs are run in place from the chipyard root (6.5).
 
 #### Step 1. chipyard-tests
 ```bash
@@ -667,35 +667,33 @@ ls benchmarks/*.riscv
 ```bash
 source env.sh
 cd generators/gemmini/software/gemmini-rocc-tests
-./build.sh
+./build.sh                    # or ./build.sh BAREMETAL_ONLY=1 for the bare-metal tests only
 ```
-- If `riscv64-unknown-linux-gnu-gcc` is on PATH, it builds all three variants: `-baremetal`, `-pk`, and `-linux`.
+- If `riscv64-unknown-linux-gnu-gcc` is on PATH, it builds all three variants: `-baremetal`, `-pk`, and `-linux` (the `-linux` ones go into the Linux image, 7.2).
 - Outputs: `build/bareMetalC/*-baremetal`, `build/imagenet/{mobilenet,resnet50}-baremetal`
-- Use the original `include/gemmini_params.h` from a fresh clone as-is. The provided bitstreams use the default config (3.2), which matches the original header. Elaboration (3.5) overwrites this header, so do not run it during the hands-on part.
+- `include/gemmini_params.h` already matches this bitstream's config (4.3); use it as checked out.
+- If linking fails with `cannot open linker script file .../riscv-tests/benchmarks/common/test.ld`, the `riscv-tests` submodule inside gemmini-rocc-tests is empty (9.2).
 
-#### Step 4. Copy to Windows
-Copy each step's output ELFs to any folder on Windows and give that path when running them. The commands in 6.5 assume they are under `firmware\baremetal\{chipyard-tests,riscv-tests,gemmini}\` in the working folder.
-
-| Output (build host) | Example location in 6.5 (relative to the Windows working folder) |
-|---|---|
-| `tests/build/{hello,cpp-hello,mt-hello}.riscv` | `firmware\baremetal\chipyard-tests\` |
-| `$RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks/*.riscv` | `firmware\baremetal\riscv-tests\` |
-| `generators/gemmini/software/gemmini-rocc-tests/build/bareMetalC/*-baremetal`, `build/imagenet/*-baremetal` | `firmware\baremetal\gemmini\` |
-
-⚠️ **Caution**: Copy the ELF itself — not the `.dump` file, and do not `strip` it. uart_tsi.py looks up `tohost`/`fromhost` in the ELF symbol table; without them it only prints `no tohost/fromhost symbols; exiting without HTIF.` and exits with no test output.
+⚠️ **Caution**: Pass the ELF itself to `uart_tsi.py` — not the `.dump` file, and do not `strip` it. uart_tsi.py looks up `tohost`/`fromhost` in the ELF symbol table; without them it only prints `no tohost/fromhost symbols; exiting without HTIF.` and exits with no test output.
 
 ### 6.5 Labs
 
-> ⚠️ Press the **SW5 CPU_RESET** button before every run. (hart0 must be back in WFI in the BootROM so MSIP can wake it again.)
+> ⚠️ **One workload per reset.** After a program exits, hart0 does not go back to the boot ROM's wait loop. Press **SW5 CPU_RESET** before every run (right after power-up the ROM is already waiting). Without a reset the script fails with `no response from target (…)`.
+>
+> All commands below run from the chipyard root in the devcontainer, with `source env.sh` and
+> `T="python3 notes/vcu118_port/uart_tsi.py --tty /dev/ttyUSB1 --baud 921600"` (6.3).
+> General form: press CPU_RESET, then `$T <workload path>`.
+>
+> All labs below pass on the `GemminiVCU118DualBootConfig` bitstream, with the outputs shown.
 
 #### Lab 0. Link check
 **Goal**: Confirm the UART-TSI link and DDR access work.
-```powershell
-python .\uart_tsi.py --tty <COM> --baud 921600 --read 0x80000000
+```bash
+$T --read 0x80000000
 ```
 **Expected output**:
 ```text
-uart_tsi.py  port COM4  921600 baud
+uart_tsi.py  port /dev/ttyUSB1  921600 baud
   [0x80000000] = 0x00050433
 ```
 The value itself is meaningless. It changes with the DDR contents after power-up or the last program loaded.
@@ -704,13 +702,14 @@ The value itself is meaningless. It changes with the DDR contents after power-up
 
 #### Lab 1. Rocket only
 **Goal**: Confirm the Rocket core and HTIF output work, without Gemmini.
-```powershell
-python .\uart_tsi.py --tty <COM> --baud 921600 .\firmware\baremetal\chipyard-tests\hello.riscv
-python .\uart_tsi.py --tty <COM> --baud 921600 .\firmware\baremetal\riscv-tests\dhrystone.riscv
+```bash
+$T tests/build/hello.riscv
+#   [CPU_RESET]
+$T $RISCV/riscv64-unknown-elf/share/riscv-tests/benchmarks/dhrystone.riscv
 ```
 **Expected output**:
 ```text
-uart_tsi.py  port COM4  921600 baud
+uart_tsi.py  port /dev/ttyUSB1  921600 baud
   hello.riscv  entry 0x80000000
   segment 0x80000000-0x80001ed8  7.7 KB
   loading  90.1%  (0 s)
@@ -725,7 +724,7 @@ Hello world from core 0, a rocket
   exit code 0
 ```
 ```text
-uart_tsi.py  port COM4  921600 baud
+uart_tsi.py  port /dev/ttyUSB1  921600 baud
   dhrystone.riscv  entry 0x80000000
   segment 0x80000000-0x800001cc  0.4 KB
   loading   2.2%  (0 s)
@@ -749,14 +748,17 @@ minstret = 186031
 
 #### Lab 2. Basic Gemmini operations
 **Goal**: Confirm a minimal Gemmini round trip and matmul work.
-```powershell
-python .\uart_tsi.py --tty <COM> --baud 921600 .\firmware\baremetal\gemmini\template-baremetal
-python .\uart_tsi.py --tty <COM> --baud 921600 .\firmware\baremetal\gemmini\mvin_mvout-baremetal
-python .\uart_tsi.py --tty <COM> --baud 921600 .\firmware\baremetal\gemmini\tiled_matmul_ws-baremetal
+```bash
+G=generators/gemmini/software/gemmini-rocc-tests/build
+$T $G/bareMetalC/template-baremetal
+#   [CPU_RESET]
+$T $G/bareMetalC/mvin_mvout-baremetal
+#   [CPU_RESET]
+$T $G/bareMetalC/tiled_matmul_ws-baremetal
 ```
 **Expected output** (`tiled_matmul_ws`):
 ```text
-uart_tsi.py  port COM4  921600 baud
+uart_tsi.py  port /dev/ttyUSB1  921600 baud
   tiled_matmul_ws-baremetal  entry 0x80000000
   segment 0x80000000-0x800001c8  0.4 KB
   loading   0.6%  (0 s)
@@ -782,9 +784,10 @@ Cycles taken: 3227178
 ✅ **Checkpoint**: `exit code 0`
 
 #### Lab 3. DNN workloads
-```powershell
-python .\uart_tsi.py --tty <COM> --baud 921600 .\firmware\baremetal\gemmini\mobilenet-baremetal
-python .\uart_tsi.py --tty <COM> --baud 921600 .\firmware\baremetal\gemmini\resnet50-baremetal
+```bash
+$T $G/imagenet/mobilenet-baremetal
+#   [CPU_RESET]
+$T $G/imagenet/resnet50-baremetal
 ```
 See 6.6 for how to read the output.
 
@@ -793,7 +796,7 @@ See 6.6 for how to read the output.
 `resnet50-baremetal` run log:
 
 ```text
-uart_tsi.py  port <COM>  921600 baud
+uart_tsi.py  port /dev/ttyUSB1  921600 baud
   resnet50-baremetal  entry 0x80000000
   segment 0x80000000-0x800001c8  0.4 KB
   loading   0.0%  (0 s)
@@ -842,36 +845,34 @@ The `loading` line updates in place while loading; the log above shows it as it 
 
 ## 7. Linux Hands-on
 
-Linux experiments use the `GemminiVCU118Config` bitstream from 3.2 (`WithVCU118Tweaks`, SD-card version). The chapter 6 bitstream is the no-SD version, so program the Linux bitstream again with 5.2.
+Linux experiments use the same `GemminiVCU118DualBootConfig` bitstream as chapter 6; only the boot request differs (5.3). The SD card goes into PMOD J52.
 
 ### 7.0 Hands-on Flow
 
 ```
-[Build host (devcontainer)]
-Build the FireMarshal image → *-bin-nodisk-flat                    (7.2)
-    ↓ scp
-[Windows + WSL2]
-Copy flat image, check hash → attach SD reader to WSL              (7.3 Steps 1–2)
-    → confirm partition 1 starts at sector 34 → raw write to partition 1 → verify   (7.3 Steps 3–5)
-    → SD card → PMOD microSD adapter → VCU118 PMOD J52              (7.3 Step 6)
-[VCU118]
-Program the Linux bitstream                                         (5.2)
-    → connect UART at 115200 → SW5 CPU_RESET → sdboot → Linux boot  (7.5 Steps 1–3)
-    → log in as root / fpga                                         (7.5 Step 4)
-    → run Gemmini tests                                             (7.6)
+[Build server (devcontainer)]
+Build the FireMarshal image → *-bin-nodisk-flat                         (7.2)
+    ↓ (copy to the machine with the SD reader, if it is not the server)
+[Linux host with a USB SD reader, or Windows + WSL2]
+Check partition 1 starts at sector 34 → raw write to partition 1 → verify   (7.3)
+    → SD card → PMOD microSD adapter → VCU118 PMOD J52
+[VCU118, bitstream already in flash]
+CPU_RESET → uart_tsi.py --boot-linux → picocom 115200                    (7.5)
+    → sdboot copies the SD payload → OpenSBI → Linux → Buildroot
+    → log in as root / fpga                                             (7.5 Step 4)
+    → run Gemmini tests                                                 (7.6)
 ```
-
-You may program the bitstream with the SD card already inserted. sdboot runs right after programming, so open the console and then reset again with SW5 to see the log from the start (7.5).
 
 ### 7.1 Boot Flow
 
 ```
-VCU118 Reset → SD Initialization → Payload Loading → OpenSBI → Linux / Buildroot → Gemmini Application
+CPU_RESET → boot ROM waits → host: --boot-linux → ACK, TSI gate closed → SD Initialization → Payload Loading
+          → OpenSBI → Linux / Buildroot → Gemmini Application
 ```
 
-- **BootROM (sdboot)**: initializes the SD card in SPI mode, then — without reading the partition table — copies **`PAYLOAD_SIZE_B` bytes starting at absolute sector 34** to `0x80000000` and jumps there. It does not look at the payload size.
+- **BootROM (sdboot -DDUALBOOT)**: waits for the host (5.3). On the Linux request it closes the TSI gate, initializes the SD card in SPI mode at 300 kHz, then — without reading the partition table — copies **`PAYLOAD_SIZE_B` = 48 MiB starting at absolute sector 34** to `0x80000000` at 1 MHz and jumps there. It does not look at the payload size.
 - **payload**: the flat binary built by FireMarshal = OpenSBI `fw_payload` + Linux `Image` + embedded initramfs (nodisk). Byte 0 = physical address `0x80000000`.
-- **Console**: `CONFIG_CMDLINE="console=ttyS0 console=ttySIF0 earlycon"` + `CMDLINE_FORCE` → SiFive UART at `0x64000000`, 115200.
+- **Console**: `CONFIG_CMDLINE="console=ttyS0 console=ttySIF0 earlycon"` + `CMDLINE_FORCE` → SiFive UART at `0x64000000`, on the same USB-UART as UART-TSI. Its baud rate changes during the boot (7.5).
 
 ### 7.2 Building the Linux Image (FireMarshal)
 
@@ -970,7 +971,7 @@ grep INITRAMFS_COMPRESSION linux_config            # GZIP=y  ← check this befo
 stat -c %s gemmini-all-bin-nodisk-flat             # ≤ 50331648 (48 MiB)
 cpio -it < initramfs.cpio | grep -c '^root/gemmini/.*-linux$'   # 56
 stat -c '%y %s' gemmini-all-bin-nodisk-flat        # modification time = the build you just ran
-sha256sum gemmini-all-bin-nodisk-flat              # compare with Windows in 7.3 Step 1
+sha256sum gemmini-all-bin-nodisk-flat              # compare after copying (7.3 Step 1)
 ```
 
 **Output**: `software/firemarshal/images/prototype/gemmini-all/gemmini-all-bin-nodisk-flat`
@@ -980,7 +981,7 @@ sha256sum gemmini-all-bin-nodisk-flat              # compare with Windows in 7.3
 
 ✅ **Checkpoint**: `GZIP=y`, size ≤ 50,331,648 B, 56 tests included, modification time is current
 
-### 7.3 Preparing the SD Card and Writing the Image (Windows + WSL2)
+### 7.3 Preparing the SD Card and Writing the Image
 
 **Goal**: Write the flat image from 7.2 raw to **partition 1** of the SD card (starting at sector 34).
 
@@ -993,37 +994,21 @@ LBA 34~    Partition 1  ← flat image (sdboot reads PAYLOAD_SIZE_B from here, 7
 
 ⚠️ **Caution — the most important distinction in this whole section**
 - Write to **partition 1 (`/dev/sdX1`)**. Writing to the whole disk (`/dev/sdX`) destroys the GPT.
-- **Always identify the disk number / device name by its size.** Guessing can overwrite the Windows SSD or another disk.
+- **Always identify the device name by its size.** Guessing can overwrite a system disk.
 - Do not use Rufus / balenaEtcher / Win32 Disk Imager — they write from sector 0, destroying the GPT and shifting the payload.
-- The SD device is not visible inside the devcontainer. Writing to `/dev/sdX1` there only creates a **regular file** inside the container.
+- The SD device is not visible inside the devcontainer. Writing to `/dev/sdX1` there only creates a **regular file** inside the container. Run this section on the server host (outside the container) or on another Linux machine with the SD reader.
 
-#### Step 1. Copy the image to Windows
-Fetch the flat image from the build host into the Windows working folder (`vcu118_port\`).
-```powershell
-scp <user>@<server>:<absolute chipyard path>/software/firemarshal/images/prototype/gemmini-all/gemmini-all-bin-nodisk-flat .\
-Get-Item .\gemmini-all-bin-nodisk-flat
-Get-FileHash .\gemmini-all-bin-nodisk-flat -Algorithm SHA256
+#### Step 1. Get the image onto the machine with the SD reader
+On the server host itself the image is already at `<chipyard>/software/firemarshal/images/prototype/gemmini-all/gemmini-all-bin-nodisk-flat` (the devcontainer bind-mounts the repository). From another machine:
+```bash
+scp <user>@<server>:<absolute chipyard path on the host>/software/firemarshal/images/prototype/gemmini-all/gemmini-all-bin-nodisk-flat .
+sha256sum gemmini-all-bin-nodisk-flat
 ```
-- `<absolute chipyard path>` is **the path on the server host**. The devcontainer bind-mounts the source, so it may differ from the path inside the container (e.g. `/workspaces/...`).
-- scp is not required. Any method works (VS Code Explorer's Download, WinSCP, etc.); what matters is the SHA256 comparison below.
+- Windows + WSL2 also works: copy the file to Windows, then attach the USB SD reader to WSL with `usbipd attach --wsl --busid <BUSID>` (administrator PowerShell, usbipd-win) and run Steps 2–5 in WSL (the file is under `/mnt/c/...`).
 
 ✅ **Checkpoint**: Size and SHA256 match the `stat` / `sha256sum` values from 7.2 Step 5.
 
-#### Step 2. Attach the SD reader to WSL
-(Optional) First check the SD card's disk number and partition position on Windows.
-```powershell
-Get-Disk                              # identify the SD card number (N) by its size
-Get-Partition -DiskNumber N           # partition 1 Offset = 17408 (= 34 × 512) means it starts at sector 34
-```
-
-Pass the SD reader to WSL from an administrator PowerShell:
-```powershell
-usbipd list                           # find the SD reader's BUSID
-usbipd bind --busid <BUSID>           # once
-usbipd attach --wsl --busid <BUSID>
-```
-
-Check the device in WSL:
+#### Step 2. Identify the SD card
 ```bash
 lsblk -o NAME,SIZE,TYPE,TRAN,MODEL,MOUNTPOINT   # identify the SD card by size (replace /dev/sdX below)
 ```
@@ -1042,7 +1027,7 @@ sudo fdisk -l /dev/sdX
 Device      Start     End  Sectors  Size Type
 /dev/sdX1      34 1048609  1048576  512M ...
 ```
-- **If `sdX1` starts at 34, skip partitioning.** A card that has already booted to `buildroot login:` has a verified layout and sdboot setup, so just replace the image without reformatting.
+- **If `sdX1` starts at 34, skip partitioning.** A card that has already booted to `buildroot login:` has a verified layout, so just replace the image without reformatting.
 - If the start is not 34, or the card is new, partition it as below (**erases the whole card**). GPT, alignment 1, 512 MiB starting at sector 34:
   ```bash
   sudo sgdisk --zap-all /dev/sdX                            # delete the existing partition table
@@ -1058,9 +1043,8 @@ Unmount first if mounted:
 mount | grep sdX
 sudo umount /dev/sdX1 /dev/sdX2 2>/dev/null
 ```
-The Windows working folder appears under `/mnt/c/...` in WSL:
 ```bash
-IMAGE="/mnt/c/<working folder>/vcu118_port/gemmini-all-bin-nodisk-flat"
+IMAGE=<path>/gemmini-all-bin-nodisk-flat
 ls -lh "$IMAGE"
 sudo dd if="$IMAGE" of=/dev/sdX1 bs=4M status=progress conv=fsync
 sync
@@ -1074,49 +1058,25 @@ sudo cmp -n "$SIZE" "$IMAGE" /dev/sdX1; echo rc=$?
 ```
 ✅ **Checkpoint**: `cmp` prints nothing and `rc=0` — the first `SIZE` bytes of the SD card match the image.
 
-#### Step 6. Detach and insert into the board
-```bash
-sync
-```
-```powershell
-usbipd detach --busid <BUSID>
-```
-Safely remove the SD card in Windows, put the microSD into the PMOD microSD adapter, and connect it to **PMOD J52** on the VCU118 (in the Linux bitstream, J52 is assigned to the SPI SD card, 3.1 `VCU118ShellPMOD = "SDIO"`).
-
-> **Note — if you cannot use WSL**: dd for Windows (as administrator) writing the whole disk with `seek=34` writes to the same location. `seek=34` preserves the GPT (LBA 0–33).
-> ```
-> dd if=gemmini-all-bin-nodisk-flat of=\\?\Device\HarddiskN\Partition0 bs=512 seek=34 --progress
-> ```
+#### Step 6. Insert into the board
+Run `sync`, eject the card, put the microSD into the PMOD microSD adapter, and connect it to **PMOD J52** on the VCU118, top row (J52 is the SPI SD card in this config, 3.1 `VCU118ShellPMOD = "SDIO"`).
 
 ### 7.4 SD Bootloader Settings
 
-The provided Linux bitstream **already includes** the settings below (48 MiB / 300 kHz). In the hands-on part you only need to observe two things:
-- Flat image size **≤ 48 MiB (50,331,648 B)** — checked in 7.2 Step 5
-- **`LOADING 0x3000000 B PAYLOAD`** in the boot log — checked in 7.5 Step 2 (proof that the bitstream has the 48 MiB BootROM)
+The dual-boot BootROM takes its SD settings from the config (`WithDualBootROM`, 3.1); they are passed to sdboot as `-D` flags during elaboration. No patch is needed.
 
-Below are the changes from the defaults and why. Apply `notes/vcu118_port/patches/sdboot-48MiB-300kHz.patch` only when regenerating the bitstream (4.1).
-
-| Item | Default | Changed to | Reason |
+| Item | sdboot default (`sd.c`) | Dual-boot config | Reason |
 |---|---|---|---|
-| `SPI_CLK` | 25 MHz | **300 kHz** | At 25 MHz, SD initialization does not get past the CMD stage (9.1). 300 kHz is within the 100–400 kHz range the SD spec requires during initialization |
-| `PAYLOAD_SIZE_B` | 30 MiB | **48 MiB** | The image with 56 tests + mobilenet + resnet50 (42.8 MB) exceeds 30 MiB |
+| `PAYLOAD_SIZE_B` | 48 MiB | **48 MiB** (`payloadSizeB = 48 << 20`) | The image with 56 tests + mobilenet + resnet50 (42.8 MB) exceeds 30 MiB |
+| `SPI_INIT_CLK` (CMD0–CMD16) | 300 kHz | **300 kHz** (`spiInitClkKHz`) | Within the 100–400 kHz range the SD spec requires during initialization. Our card does not initialize at 25 MHz |
+| `SPI_CLK` (CMD18 copy) | 300 kHz | **1 MHz** (`spiClkKHz`) | Measured limit about 3 MHz (below); 1 MHz keeps a ~3.5× margin |
+| `BBL_PARTITION_START_SECTOR` | 34 | 34 | Partition 1 start (7.3) |
 
-`fpga/src/main/resources/vcu118/sdboot/sd.c` (after applying `notes/vcu118_port/patches/sdboot-48MiB-300kHz.patch`):
 ```c
-// Total payload in B
-// 48 MiB instead of the 30 MiB default: the gemmini-all nodisk flat image is
-// 42,813,448 B (85% of 48 MiB).
-#ifndef PAYLOAD_SIZE_B
-#define PAYLOAD_SIZE_B (48 << 20)
-#endif
-...
-// SPI SCLK frequency for the payload copy (copy(), CMD18), in kHz
-// 300 kHz instead of the 25 MHz default. ...
+// fpga/src/main/resources/vcu118/sdboot/sd.c (excerpt)
 #ifndef SPI_CLK
 #define SPI_CLK 	300
 #endif
-
-// SPI SCLK frequency during card initialization (CMD0 ... CMD16), in kHz.
 #ifndef SPI_INIT_CLK
 #define SPI_INIT_CLK	300
 #endif
@@ -1125,27 +1085,71 @@ Below are the changes from the defaults and why. Apply `notes/vcu118_port/patche
 #define SPI_INIT_DIV	(((F_CLK * 1000) / SPI_INIT_CLK) / 2 - 1)
 ```
 
-- `F_CLK` is the pbus clock (MHz) passed in at elaboration. At 50 MHz, `SPI_DIV` = 50000 / 300 / 2 − 1 = **82**, so the actual SCK = 50 MHz / (2 × 83) ≈ **301 kHz**.
-- **Init and copy clocks are separate.** `sd_poweron()` (initialization, CMD0–CMD16) uses `SPI_INIT_DIV` from `SPI_INIT_CLK`, and `copy()` (payload copy, CMD18) uses `SPI_DIV` from `SPI_CLK`. Both default to 300 kHz in `sd.c`, so here **the copy also runs at 300 kHz**, as in the released bitstream. Both can be overridden at build time (`-DSPI_CLK=… -DSPI_INIT_CLK=…`); the dual-boot config uses 300 kHz init / 1 MHz copy (`dual_boot/README.md`).
-- **Expected limit of `SPI_CLK`: about 3 MHz.** Measured with our card and the Pmod microSD adapter on J52 (level-shifted by U41): copies pass up to 3.125 MHz and fail from 3.57 MHz (CMD18 CRC error, then no response at 5 MHz and above; 12.5 MHz always fails). Keep `SPI_CLK` at 1 MHz or below for margin. The limit depends on the card and adapter.
-- Loading an image of 30 MiB or less with the new BootROM is fine. Conversely, **loading a 48 MiB-class image with a 30 MiB BootROM leaves the tail unloaded and boot fails silently**.
+- **Init and copy clocks are separate.** `sd_poweron()` (initialization, CMD0–CMD16) uses `SPI_INIT_DIV` from `SPI_INIT_CLK`, and `copy()` (payload copy, CMD18) uses `SPI_DIV` from `SPI_CLK`.
+- `F_CLK` is the pbus clock (MHz). At 50 MHz: `SPI_INIT_DIV` = 50000 / 300 / 2 − 1 = **82** (SCK = 50 MHz / (2 × 83) ≈ **301 kHz**), `SPI_DIV` = 50000 / 1000 / 2 − 1 = **24** (exactly **1 MHz**). Copying 48 MiB takes about 7 minutes.
+- **Expected limit of `SPI_CLK`: about 3 MHz.** Measured with our card and the Pmod microSD adapter on J52 (level-shifted by U41), with the host driving the SPI controller over TSI while the ROM waited; CMD18 reads at sector 34 were checked against CRC16 and a 300 kHz reference:
 
-⚠️ **Caution** (when regenerating): These values are part of the BootROM, so **the Linux bitstream must be regenerated** after changing them. Changing only `sd.c` does not trigger re-elaboration (see the caution in 4.1).
+  | SPI clock | Result |
+  |---|---|
+  | 301 kHz – 3.125 MHz | Pass |
+  | 3.57 MHz | Fail: CMD18 returns R1 `0x08` (CRC error) |
+  | 5 MHz and above | Fail: no response to CMD18 (`sd_cmd: timeout`); 12.5 MHz always fails |
+
+  The limit depends on the card and adapter. Keep `SPI_CLK` at 1 MHz or below for margin.
+- Loading an image of 48 MiB or less is fine. **A larger image leaves the tail unloaded and boot fails silently** (9.1).
+
+⚠️ **Caution** (when changing): These values are part of the BootROM, so **the bitstream must be regenerated** after changing them. Changing only `sd.c` does not trigger re-elaboration (see the caution in 4.1).
 
 ### 7.5 Booting
-First program the Linux bitstream (`GemminiVCU118SDConfig50-sd48-spi300k.bit`) with 5.2.
 
-#### Step 1. Connect the UART console
-Use the CP2105 **Standard COM port** (5.1). Settings: **115200 8-N-1, no flow control**.
-```powershell
-Get-CimInstance Win32_SerialPort | Select-Object DeviceID,Name   # find the Standard COM port number
-python -m serial.tools.miniterm <COM> 115200                       # terminal included with pyserial (2.2 Step 5)
+#### Step 1. Console baud rates
+The console runs at two baud rates during one Linux boot:
+
+| Stage | Baud | Why |
+|---|---|---|
+| Boot ROM (`INIT` … `BOOT`) | 921600 | UART reset value (`WithVCU118PeripheralMap`) |
+| OpenSBI and the early kernel log (earlycon) | 921600 | The DTS UART node has no `clock-frequency`, so OpenSBI keeps the existing divisor |
+| From `printk: console [ttySIF0] enabled` onward, including login | **115200** | The Linux SiFive UART driver defaults to 115200 when `console=ttySIF0` gives no rate |
+
+So a terminal at 115200 shows `�` characters until the kernel console switches, and a terminal at 921600 shows garbage after it switches.
+
+#### Step 2. CPU_RESET → request the Linux path → open the console
+With the SD card in J52 (7.3 Step 6):
+```bash
+# 1. Press SW5 CPU_RESET
+# 2. Request the Linux path; the script exits as soon as the ROM prints INIT
+python3 notes/vcu118_port/uart_tsi.py --tty /dev/ttyUSB1 --baud 921600 --boot-linux
+# 3. Open the console at 115200 (login runs at this rate)
+picocom -b 115200 /dev/ttyUSB1
 ```
-- PuTTY / Tera Term also work.
-- Linux host: `screen /dev/ttyUSB1 115200` (the port number depends on your setup)
+**Expected output**:
+```text
+$ python3 notes/vcu118_port/uart_tsi.py --tty /dev/ttyUSB1 --baud 921600 --boot-linux
+uart_tsi.py  port /dev/ttyUSB1  921600 baud
+  boot ROM took the SD path after ~0 s (1 request)
+INIT
+CMD0
+CMD8
+ACMD41
 
-#### Step 2. SW5 CPU_RESET → check the SD loading log
-With the console **already open**, press **SW5 CPU_RESET** on the board. sdboot initializes the SD card and copies the payload into DDR.
+  the line now belongs to the console; open a terminal on the same port
+
+$ picocom -b 115200 /dev/ttyUSB1
+picocom v3.1
+
+port is        : /dev/ttyUSB1
+flowcontrol    : none
+baudrate is    : 115200
+...
+Type [C-a] [C-h] to see available commands
+Terminal ready
+�����������������������������������        ← ROM copy spinner + OpenSBI/early kernel log at 921600 (about 7 min)
+```
+- The script exits as soon as it sees `INIT`. The ROM lines after `INIT` that the script did not read are lost, which is why the output stops at `ACMD41` here.
+- The `�` characters are normal (Step 1). To read the ROM and OpenSBI log instead, open picocom at 921600; when the text turns to garbage at the kernel console switch, press **Ctrl-A Ctrl-D** three times to drop to 115200 (Ctrl-A Ctrl-U raises it again).
+- **Exit picocom** with **Ctrl-A** then **Ctrl-X** (Ctrl-C is sent to the board). Exiting does not reset the board; Linux keeps running and the same command reopens the console. Exit picocom before running `uart_tsi.py` again.
+
+The ROM log at 921600, for reference:
 ```text
 INIT
 CMD0
@@ -1154,45 +1158,41 @@ ACMD41
 CMD58
 CMD16
 CMD18
-LOADING 0x3000000 B PAYLOAD      ← 48 MiB. 0x1e00000 (30 MiB) means an old BootROM
-LOADING
+LOADING 0x03000000 B PAYLOAD      ← 48 MiB
+LOADING  -/|\                     ← about 7 min at 1 MHz
 BOOT
 ```
-✅ **Checkpoint**: `LOADING 0x3000000` — proof that the bitstream has the 48 MiB BootROM. A `CRC mismatch` during loading means an SD write / card problem.
 
-#### Step 3. OpenSBI → Linux → Buildroot
+#### Step 3. Linux → Buildroot
+Once the kernel console switches to 115200, the boot log becomes readable and ends at:
 ```text
-OpenSBI v1.2
-   ____                    _____ ____ _____
-  / __ \                  / ____|  _ \_   _|
- ...
-Platform Name             : ucb-bar,chipyard
-...
-[    0.000000] Linux version 6.6.0-00004-g67bc4513761f ... #N SMP <build time>
 ...
 Running sysctl: OK
 ...
 Welcome to Buildroot
 buildroot login:
 ```
-
-✅ **Checkpoint**: Check that `Linux version ... #N SMP <build time>` matches the image you just built. This is the easiest way to confirm the new image made it onto the SD card.
+If no prompt appears after the boot finishes, press Enter.
 
 #### Step 4. Log in
 - ID: `root` / PW: `fpga`
 
 ✅ **Checkpoint**: A shell prompt (`#`) after login. `Login incorrect` means the password change from 7.2 Step 0 is not in the new image (9.1).
 
+✅ **Checkpoint**: `cat /proc/version` shows `Linux version ... #N SMP <build time>` of the image you just built — the easiest way to confirm the new image made it onto the SD card (the same line in the boot log is printed at 921600, so it is not readable at 115200).
+
 #### Diagnosing by the boot log
-How far the log gets tells you which parts are working.
+How far the boot gets tells you which parts are working. The ROM lines are printed at 921600.
 
 | Last output seen | Confirmed working | Suspect next |
 |---|---|---|
-| (no output) | — | Bitstream (5.2), COM port / baud (Step 1), SW5 reset |
-| `INIT` | Rocket runs the BootROM, UART OK | SD card / PMOD J52 seating, SPI clock (9.1) |
-| `CMD0` … `CMD18` | SPI SD card responds | Bad card, write (7.3) |
+| `no INIT within 30 s` from the script | — | No CPU_RESET since the last run, port / baud (5.1), bitstream not loaded (DONE LED, 5.2) |
+| `INIT` | Rocket runs the BootROM, UART OK | SD card / PMOD J52 seating (9.1) |
+| `CMD0` … `CMD16` | SPI SD card initializes at 300 kHz | — |
+| `CMD18` → `LOADING  sd_cmd: timeout` → `ERROR` | SD init | SPI copy clock too fast for this card (7.4, 9.1) |
+| `CRC mismatch` during `LOADING` | SD read path | Bad card or bad write (7.3) |
 | `LOADING 0x… B PAYLOAD` → `BOOT` | SD → DDR copy | Payload size / position (7.4, 7.3 Step 3) |
-| `OpenSBI` / `Linux version …` | Base SoC: Rocket + DDR + interrupts / timers | initramfs, kernel config (7.2) |
+| Readable kernel log at 115200 | Base SoC: Rocket + DDR + interrupts / timers, OpenSBI | initramfs, kernel config (7.2) |
 | `buildroot login:` → successful login | FireMarshal rootfs | — |
 | Gemmini test `rc=0` (7.6) | RoCC / Gemmini functionality | — |
 
@@ -1281,6 +1281,8 @@ Interpretation:
 \* Excluding `*_spad` workloads (6.7)
 \*\* 54 of 56 pass. `gemmini_counter` and `global_average` fail.
 
+All results above were confirmed on the `GemminiVCU118DualBootConfig` bitstream: bare-metal through `uart_tsi.py <ELF>` and Linux through `uart_tsi.py --boot-linux`, on the same board without reprogramming.
+
 ### 8.2 Open Items
 - [ ] Find the cause of the `gemmini_counter` and `global_average` failures
 - [ ] Per-layer depthwise analysis (17 `conv_dw_N:` lines) and review of better mappings
@@ -1292,19 +1294,27 @@ Interpretation:
 > Format: **Symptom → Cause → Fix**
 
 ### 9.1 Linux
-#### SD initialization stops at the CMD stage
-- Cause: sdboot defaults to 25 MHz High Speed mode. The comment in `sd.c` says to drop to Default Speed mode (12.5 MHz) if the SD card does not support that speed. A card that does not support 25 MHz SPI does not respond to the initialization commands.
+#### SD initialization stops at the CMD stage (`INIT` → `sd_cmd: timeout` → `ERROR`)
+- Cause: the card does not answer the initialization commands. Upstream sdboot ran them at 25 MHz, which our card does not support; this config initializes at 300 kHz (7.4), so a failure here usually means no electrical contact.
 - Fix:
-  1. Check that you programmed the provided Linux bitstream (`...-sd48-spi300k.bit`, 300 kHz) (5.2 Step 3, sha256 comparison)
-  2. If it still stops, check the SD card and PMOD adapter seating; try another card
-  3. If you regenerated the bitstream yourself, check that `notes/vcu118_port/patches/sdboot-48MiB-300kHz.patch` was applied (4.1, 7.4)
+  1. Check the SD card and PMOD adapter seating: J52, top row, pin 1 = CS
+  2. Re-insert the card and press CPU_RESET (the card keeps its state across an FPGA reset)
+  3. Try another card (a microSDHC 4–32 GB card is the safest; SDSC ≤ 2 GB cards fail CMD8)
+
+#### Copy fails right after `CMD18` (`LOADING  sd_cmd: timeout` → `ERROR`)
+- Cause: the SPI copy clock is too fast for the card and the J52 level shifter. On our board copies fail from 3.57 MHz; an earlier version of this config copied at 12.5 MHz and always failed here (7.4).
+- Fix: keep `spiClkKHz` at 1 MHz (the `WithVCU118DualBootTweaks` default) or lower, and regenerate the bitstream (4.1).
 
 #### Boot fails after payload loading (hangs with no message)
 - Cause: the payload is larger than `PAYLOAD_SIZE_B` — sdboot ignores the size and reads a fixed amount
 - Fix:
-  1. Check the bitstream — the log should say `LOADING 0x3000000` (48 MiB). `0x1e00000` (30 MiB) means an old BootROM (7.5 Step 2)
+  1. Check the BootROM — the ROM log at 921600 should say `LOADING 0x3000000` (48 MiB). `0x1e00000` (30 MiB) means the config's `payloadSizeB` was not set (7.5 Step 2)
   2. Check and shrink the image — `stat -c %s ...-flat` ≤ 50,331,648 B, confirm gzip initramfs compression (7.2 Step 5). You can also drop binaries from the overlay
-  3. If 48 MiB is still not enough, increase `PAYLOAD_SIZE_B` and regenerate the bitstream (4.1, 7.4)
+  3. If 48 MiB is still not enough, increase `payloadSizeB` in `GemminiVCU118DualBootConfig` and regenerate the bitstream (4.1, 7.4)
+
+#### Only `�` at 115200, even after 10 minutes
+- Cause: either the boot stopped in the ROM (its messages are at 921600), or the prompt has scrolled by.
+- Fix: press Enter. If nothing appears, switch picocom to 921600 (Ctrl-A Ctrl-U three times) and look for `ERROR`; or press CPU_RESET and boot again with the console at 921600 (7.5 Step 2).
 
 #### `root` / `fpga` login fails (`Login incorrect`)
 - Cause: in a nodisk initramfs, FireMarshal's static busybox overwrites buildroot's busybox. This busybox has no SHA crypt, so it cannot verify buildroot's default SHA-256 (`$5$`) hash.
@@ -1335,6 +1345,15 @@ Interpretation:
 - Cause: in `./t | grep ...; echo $?`, `$?` is `grep`'s exit code. `matmul*` prints nothing, so grep returns 1.
 - Fix: run the test on its own and check its exit code directly (7.6.1).
 
-### 9.2 Other
+### 9.2 Build, host and `uart_tsi.py`
+- **`Failed to run dtc; is it in your path?` during elaboration** (`dtc: error while loading shared libraries: libyaml-0.so.2`) → Vivado's `settings64.sh` put Vivado's `dtc` first in `PATH`. Do not source it; append `/opt/Xilinx/2025.2/Vivado/bin` to `PATH` instead (2.2 Step 3). If the conda env was already active, re-running `source env.sh` does not move it back to the front.
+- **The Vivado run stopped without an error message** → the devcontainer was stopped (e.g. the VS Code window closed). Keep the window open, or run the build on a host that stays up. `obj/post_*.dcp` checkpoints show how far it got.
+- **Linking gemmini-rocc-tests fails with `cannot open linker script file .../riscv-tests/benchmarks/common/test.ld`** → the `riscv-tests` submodule inside gemmini-rocc-tests is empty. Restore it: `git -C generators/gemmini/software/gemmini-rocc-tests/riscv-tests reset --hard HEAD && git -C generators/gemmini/software/gemmini-rocc-tests/riscv-tests submodule update --init`.
+- **`no response from target (…)`** → no CPU_RESET since the last run, or the TSI gate is still closed from an earlier `--boot-linux`. Press CPU_RESET. Also check `--baud 921600` and the port (5.1).
+- **`no INIT within 30 s`** → the board was not reset, or the ROM already took a path. Press CPU_RESET and retry.
+- **`cannot open port`** → another program (picocom) holds the port, or no permission (2.2 Step 4).
+- **`/dev/ttyUSB1` is gone inside the devcontainer** → the USB-UART re-enumerated (cable re-plugged, board power-cycled). A privileged container does not see hot-plugged devices; reopen the container, or run `uart_tsi.py` on the host.
+
+### 9.3 Other
 - **Not sure the new image made it onto the card** → compare `Linux version ... #N SMP <build time>` in the boot log, and `sha256sum` on the host.
 - **The shell says a command does not exist** → with nodisk, only FireMarshal's busybox applets are available (e.g. no `timeout`). Check `images/prototype/<workload>/busybox_config`.

@@ -151,7 +151,7 @@ class GemminiVCU118UARTTSIConfig extends Config(
   *     payload, boots it). No timeout.
   *   - peripheral map = the addresses in sdboot's platform.h (UART, SPI, GPIO).
   *
-  * Host: notes/vcu118_port/dual_boot/uart_tsi_dual.py [--boot-linux].
+  * Host: notes/vcu118_port/uart_tsi.py [--boot-linux].
   *
   * SD SPI clocks: init (CMD0 ... CMD16) at 300 kHz, within the spec's
   * 100-400 kHz identification range (our card failed init at 25 MHz). Copy
